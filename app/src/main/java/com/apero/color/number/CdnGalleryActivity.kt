@@ -206,6 +206,7 @@ private fun GalleryRoot(onBack: () -> Unit) {
                         catalog = s.catalog,
                         repo = repo,
                         cacheGeneration = cacheGeneration,
+                        onCacheBump = { cacheGeneration++ },
                         onPick = { selectedCollection = it },
                     )
                 } else {
@@ -226,6 +227,7 @@ private fun CollectionList(
     catalog: IceorsCatalog,
     repo: IceorsRepository,
     cacheGeneration: Int,
+    onCacheBump: () -> Unit,
     onPick: (IceorsCatalog.Collection) -> Unit,
 ) {
     var query by remember { mutableStateOf("") }
@@ -271,6 +273,11 @@ private fun CollectionList(
                 }
 
                 // --- Catalog collections ------------------------------------
+                // --- Bundled sample pictures (shipped in assets/) -----------
+                item(key = "__bundled_samples") {
+                    BundledSamplesList(repo = repo, onImported = onCacheBump)
+                }
+
                 items(filtered) { coll ->
                     Row(
                         modifier = Modifier
@@ -339,6 +346,100 @@ private fun CachedPicturesList(
             HorizontalDivider()
         }
         HorizontalDivider(thickness = 2.dp, color = Color(0xFFFFCC80))
+    }
+}
+
+/**
+ * One-tap import for `*_b.zip` files shipped in `assets/iceors_samples/`. Used
+ * for picture keys that fail to download (e.g. CDN paywalls / 403s on `&` keys
+ * via certain proxies) — drop the zip into the assets folder and it appears
+ * here as a clickable row.
+ */
+@Composable
+private fun BundledSamplesList(
+    repo: IceorsRepository,
+    onImported: () -> Unit,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val samples = remember { repo.listBundledZips() }
+    if (samples.isEmpty()) return
+
+    val statusByName = remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    val busyName = remember { mutableStateOf<String?>(null) }
+
+    fun setStatus(name: String, msg: String) {
+        statusByName.value = statusByName.value.toMutableMap().apply { put(name, msg) }
+    }
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color(0xFFE3F2FD))
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "🎁 Bundled samples (${samples.size})",
+                fontWeight = FontWeight.SemiBold,
+                color = Color(0xFF0D47A1),
+            )
+            Text("Tap to import", color = Color(0xFF1565C0))
+        }
+        for (filename in samples) {
+            val key = filename.removeSuffix("_b.zip")
+            val cached = repo.cache.isPictureReady(key)
+            val isBusy = busyName.value == filename
+            val status = statusByName.value[filename]
+                ?: if (cached) "Imported ✓" else "Tap to import"
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(enabled = !isBusy) {
+                        if (cached) {
+                            context.startActivity(
+                                CdnDrawActivity.intent(context, key, "Sample")
+                            )
+                            return@clickable
+                        }
+                        busyName.value = filename
+                        setStatus(filename, "Importing…")
+                        scope.launch {
+                            val result = withContext(Dispatchers.IO) {
+                                runCatching { repo.importFromAsset(filename) }
+                            }
+                            busyName.value = null
+                            result.onSuccess { keys ->
+                                onImported()
+                                if (keys.isNotEmpty()) {
+                                    setStatus(filename, "Imported ✓")
+                                    context.startActivity(
+                                        CdnDrawActivity.intent(context, keys.first(), "Sample")
+                                    )
+                                } else {
+                                    setStatus(filename, "Empty zip")
+                                }
+                            }.onFailure { err ->
+                                setStatus(filename, "Failed: ${err.message}")
+                            }
+                        }
+                    }
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(key, fontWeight = FontWeight.Medium)
+                    Text(filename, color = Color.Gray)
+                }
+                Text(status, color = if (cached) Color(0xFF2E7D32) else Color.Gray)
+            }
+            if (isBusy) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            HorizontalDivider()
+        }
+        HorizontalDivider(thickness = 2.dp, color = Color(0xFFBBDEFB))
     }
 }
 

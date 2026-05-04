@@ -41,6 +41,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import com.apero.color.number.iceors.IceorsAsset
 import com.apero.color.number.iceors.IceorsPalette
 import com.apero.color.number.iceors.IceorsView
@@ -112,6 +114,7 @@ private fun CdnDrawScreen(picKey: String, title: String, onBack: () -> Unit) {
 private fun CdnDrawBody(padding: PaddingValues, picKey: String) {
     val context = LocalContext.current
     var loaded by remember { mutableStateOf<IceorsAsset.Loaded?>(null) }
+    var revealBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var activeIndex by remember { mutableIntStateOf(-1) }
     var done by remember { mutableIntStateOf(0) }
@@ -121,12 +124,24 @@ private fun CdnDrawBody(padding: PaddingValues, picKey: String) {
     var hintsUsed by remember { mutableIntStateOf(0) }
 
     LaunchedEffect(picKey) {
+        val repo = IceorsRepository(context)
         runCatching {
             withContext(Dispatchers.IO) {
-                IceorsRepository(context).loadCachedAsset(picKey)
+                val asset = repo.loadCachedAsset(picKey)
+                // `<key>c` only ships in SP/SPV/SSPV zips. For oil pics it
+                // holds the textured "finished" image revealed by coloring;
+                // for plain SPV it's just a flat-colored render. V pics ship
+                // no c file, in which case bitmap stays null and the view
+                // falls back to solid palette fill.
+                val finishedFile = repo.cache.finishedImageFile(picKey)
+                val bitmap = if (finishedFile.exists() && finishedFile.length() > 0) {
+                    BitmapFactory.decodeFile(finishedFile.absolutePath)
+                } else null
+                asset to bitmap
             }
-        }.onSuccess { l ->
+        }.onSuccess { (l, bm) ->
             loaded = l
+            revealBitmap = bm
             total = l.regions.size
             activeIndex = l.palette.firstOrNull()?.index ?: -1
         }.onFailure { error = it.message ?: "load failed" }
@@ -152,18 +167,27 @@ private fun CdnDrawBody(padding: PaddingValues, picKey: String) {
                 Box(
                     modifier = Modifier.fillMaxWidth().weight(1f).background(Color.White),
                 ) {
+                    // Mirrors the original app's `key.contains("oil")` test
+                    // (`C1.u#k0:783`): oil pics route the reveal bitmap onto
+                    // stroke / black-fill paints too, so line decorations
+                    // render textured ("transparent") instead of solid black.
+                    val isOil = picKey.contains("oil")
                     AndroidView(
                         modifier = Modifier.fillMaxSize(),
                         factory = { ctx ->
                             IceorsView(ctx).also { v ->
                                 view = v
                                 v.setAsset(loaded!!)
+                                v.setRevealBitmap(revealBitmap, revealDecorations = isOil)
                                 v.selectPaletteIndex(activeIndex)
                                 v.onProgressChanged = { d, t -> done = d; total = t }
                                 v.onPaletteProgressChanged = { paletteProgress = it }
                             }
                         },
-                        update = { v -> v.selectPaletteIndex(activeIndex) },
+                        update = { v ->
+                            v.setRevealBitmap(revealBitmap, revealDecorations = isOil)
+                            v.selectPaletteIndex(activeIndex)
+                        },
                     )
                     // Hint floating button — top-right of the canvas, like the reference app.
                     Box(

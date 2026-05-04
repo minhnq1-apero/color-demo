@@ -11,14 +11,22 @@ import java.io.File
  * at the app-private files dir instead of external storage to avoid scoped
  * storage permission noise — the contents are not user-visible.
  *
- * Per-picture layout:
+ * The `_b.zip` payload differs by picture format:
+ *   - SP / SPV / SSPV pics (`picGameType` 4/5, e.g. `festivalSPV132612`):
+ *     `<key>b`, `<key>c`, `sp_new_paint_flag`.
+ *   - V pics — "ordinary" / oil / fairy etc. (`picGameType` 3, e.g.
+ *     `festivalV101445`): `<key>b` only. No `<key>c`, no flag.
+ *
+ * Both share the standalone PNG previews (`<key>`, `<key>_mid`).
+ *
+ * Per-picture layout (only `<key>b` is guaranteed):
  * ```
  * <root>/<key>/
- *     <key>          — 256x256 grayscale lineart PNG
- *     <key>_mid      — 512x512 mid-resolution preview PNG
- *     <key>b         — pipe-delimited region/path data (extracted from _b.zip)
- *     <key>c         — 2048x2048 finished JPEG (extracted from _b.zip)
- *     sp_new_paint_flag
+ *     <key>             — 256x256 preview PNG               (always)
+ *     <key>_mid         — 512x512 mid-resolution preview    (always)
+ *     <key>b            — pipe-delimited region/path data   (always, from zip)
+ *     <key>c            — 2048x2048 finished JPEG           (SPV/SSPV only)
+ *     sp_new_paint_flag — marker                            (SPV/SSPV only)
  * ```
  */
 class IceorsCache(context: Context) {
@@ -37,11 +45,13 @@ class IceorsCache(context: Context) {
     fun cornerBgFile(collectionName: String): File =
         File(root, "_collection_covers/${safe(collectionName)}_corner_bg.jpg").apply { parentFile?.mkdirs() }
 
-    /** True iff a picture's gameplay data is fully present locally. */
-    fun isPictureReady(key: String): Boolean =
-        pathDataFile(key).existsAndNonEmpty() &&
-            finishedImageFile(key).existsAndNonEmpty() &&
-            paintFlagFile(key).existsAndNonEmpty()
+    /**
+     * True iff a picture's gameplay data is present locally. Only the
+     * pipe-delimited path-data file is required — `<key>c` and the
+     * `sp_new_paint_flag` only ship with SPV/SSPV zips, so requiring them
+     * would silently exclude every "V" (ordinary / oil / fairy) picture.
+     */
+    fun isPictureReady(key: String): Boolean = pathDataFile(key).existsAndNonEmpty()
 
     fun clear(key: String) {
         pictureDir(key).deleteRecursively()

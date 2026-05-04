@@ -10,9 +10,9 @@ import java.util.zip.ZipInputStream
  * dispatcher.
  *
  * Resume-safe: if the expected output already exists with non-zero size, the
- * fetch is skipped. The expensive `_b.zip` download is also skipped if its
- * three extracted members (`<key>b`, `<key>c`, `sp_new_paint_flag`) are
- * already on disk.
+ * fetch is skipped. The `_b.zip` is skipped once `<key>b` is on disk — that's
+ * the only entry guaranteed to ship in every variant (SPV zips also ship
+ * `<key>c` and `sp_new_paint_flag`; V zips ship just the path data).
  */
 class IceorsDownloader(private val cache: IceorsCache) {
 

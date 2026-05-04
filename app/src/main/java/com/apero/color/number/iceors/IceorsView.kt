@@ -56,10 +56,21 @@ class IceorsView @JvmOverloads constructor(
         private const val MIN_LABEL_SCREEN_DP = 12f
 
         /**
-         * Actual on-screen height (dp) used for every digit, regardless of
-         * region size. Matches the reference app's small uniform numerals.
+         * Lower bound (dp) for digit height — used when a region is so small
+         * its inscribed circle would render text below this size. Combined
+         * with [MIN_LABEL_SCREEN_DP] it sets a readable floor at high zoom.
          */
-        private const val LABEL_TEXT_DP = 9f
+        private const val LABEL_MIN_DP = 8f
+
+        /** Upper bound (dp) so labels in big regions don't render absurdly large. */
+        private const val LABEL_MAX_DP = 28f
+
+        /**
+         * Fraction of the inscribed-circle diameter used as the digit text
+         * size. ~0.9× the radius keeps both tall ("9") and wide two-digit
+         * labels comfortably inside the inscribed circle.
+         */
+        private const val LABEL_RADIUS_FACTOR = 0.9f
 
         /** Max zoom multiplier above the fit-to-view scale; pinch-in saturates here. */
         private const val MAX_ZOOM_FACTOR = 8f
@@ -77,7 +88,8 @@ class IceorsView @JvmOverloads constructor(
     private var activePaletteIndex: Int = -1
     private var activePaletteColor: Int = 0
     private val minLabelScreenPx = MIN_LABEL_SCREEN_DP * resources.displayMetrics.density
-    private val labelTextScreenPx = LABEL_TEXT_DP * resources.displayMetrics.density
+    private val labelMinScreenPx = LABEL_MIN_DP * resources.displayMetrics.density
+    private val labelMaxScreenPx = LABEL_MAX_DP * resources.displayMetrics.density
 
     /** Fit-to-view scale, recomputed in [fitToView] so zoom clamps stay correct. */
     private var fitScale: Float = 1f
@@ -91,6 +103,21 @@ class IceorsView @JvmOverloads constructor(
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
     }
+
+    /**
+     * "Reveal" fill paint: when an asset ships a finished image (`<key>c`),
+     * completed regions are filled with that bitmap clipped to the region's
+     * path instead of a flat palette color. This mirrors the original app's
+     * `E1.a.o(Bitmap, scale)` setting a `BitmapShader` on the FILL paint —
+     * for oil pics the bitmap holds the textured/photographic content the
+     * user "uncovers" by coloring; for non-oil SPV pics the bitmap is just a
+     * flat-color image so the visual matches solid palette fill anyway.
+     */
+    private val revealPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        isFilterBitmap = true
+    }
+    private var revealBitmap: Bitmap? = null
     private val blackFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
         color = Color.BLACK
@@ -164,9 +191,63 @@ class IceorsView @JvmOverloads constructor(
         } else {
             activePaletteIndex = -1
         }
+        // Re-bind any previously-set reveal bitmap to the new asset's canvas
+        // size — the shader matrix depends on canvasSize / bitmap.width.
+        revealBitmap?.let { rebuildRevealShader(it) }
         fitToView()
         notifyProgress()
         invalidate()
+    }
+
+    /**
+     * Provide the per-asset finished bitmap (`<key>c`) used as the source
+     * texture for completed regions. Pass null to clear (e.g. V pics that
+     * don't ship one — those keep solid palette fill). Recycled bitmaps stay
+     * the caller's responsibility; we only hold a reference.
+     *
+     * [revealDecorations] mirrors the original's `E1.d` (oil) override of
+     * `o(Bitmap, scale)`: it ALSO routes the bitmap shader through the
+     * stroke / black-fill paints, so line decorations and solid-black
+     * accents render as the underlying image instead of opaque black —
+     * giving oil pics their textured "transparent line" look. For non-oil
+     * SPV pics (`E1.c`) the original leaves the stroke paint plain-black,
+     * so we do the same when the flag is false.
+     */
+    @JvmOverloads
+    fun setRevealBitmap(bitmap: Bitmap?, revealDecorations: Boolean = false) {
+        revealBitmap = bitmap
+        val shader = bitmap?.let { buildRevealShader(it) }
+        revealPaint.shader = shader
+        // Strokes / black-fill decorations: shader-on iff caller asked
+        // (i.e. oil mode). Otherwise restore the solid colors so non-oil
+        // assets keep their crisp black outlines.
+        if (shader != null && revealDecorations) {
+            strokePaint.shader = shader
+            blackFillPaint.shader = shader
+        } else {
+            strokePaint.shader = null
+            strokePaint.color = Color.BLACK
+            blackFillPaint.shader = null
+            blackFillPaint.color = Color.BLACK
+        }
+        invalidate()
+    }
+
+    private fun rebuildRevealShader(bitmap: Bitmap) {
+        revealPaint.shader = buildRevealShader(bitmap)
+    }
+
+    private fun buildRevealShader(bitmap: Bitmap): BitmapShader {
+        val canvasSize = asset?.canvasSize ?: bitmap.width.toFloat()
+        val shader = BitmapShader(bitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+        // Map bitmap (sized bitmap.width × bitmap.height) to the canvas's
+        // canvasSize × canvasSize coordinate space — same as the original's
+        // `matrix.preScale(1/f7, 1/f7)` where f7 = bitmap.width / canvasSize.
+        val mtx = Matrix()
+        val s = canvasSize / bitmap.width.toFloat()
+        mtx.preScale(s, s)
+        shader.setLocalMatrix(mtx)
+        return shader
     }
 
     /**
@@ -320,9 +401,21 @@ class IceorsView @JvmOverloads constructor(
         val zoom = currentZoom()
 
         // 1. Fillable regions
+        //    - Unpainted: solid placeholder gray.
+        //    - Painted + reveal bitmap available: shader-fill from the
+        //      finished image clipped to the region's path (oil-style reveal).
+        //    - Painted + no reveal bitmap: solid palette color.
+        val hasReveal = revealBitmap != null
         for (region in a.fillables) {
-            fillPaint.color = if (region.completed) region.color else placeholderColor
-            canvas.drawPath(region.path, fillPaint)
+            if (!region.completed) {
+                fillPaint.color = placeholderColor
+                canvas.drawPath(region.path, fillPaint)
+            } else if (hasReveal) {
+                canvas.drawPath(region.path, revealPaint)
+            } else {
+                fillPaint.color = region.color
+                canvas.drawPath(region.path, fillPaint)
+            }
         }
 
         // 2. Active-palette highlight (translucent tiled squares)
@@ -363,21 +456,28 @@ class IceorsView @JvmOverloads constructor(
             }
         }
 
-        // 5. Region numbers — small uniform digits drawn at the per-region
-        //    label position from the data file (`(labelX, labelY)`, the
-        //    packed coord cb.apk uses). The data-file `fontSize` only acts as
-        //    a visibility gate: regions whose `fontSize × zoom` is below the
-        //    on-screen threshold stay hidden until the user zooms in. The
-        //    rendered text size is constant in screen space, so big regions
-        //    don't get oversized digits.
+        // 5. Region numbers — drawn at each region's pole-of-inaccessibility
+        //    (the geometric most-central interior point). Text size scales
+        //    with the region's inscribed-circle radius so big areas get
+        //    readable digits and tiny ones don't overflow, with a screen-dp
+        //    floor and ceiling so zoom doesn't make digits unreadable or
+        //    cartoonishly large. The data-file `fontSize` is still used as
+        //    the visibility gate: regions whose `fontSize × zoom` is below
+        //    the on-screen threshold stay hidden until the user zooms in.
         val minCanvasFont = minLabelScreenPx / zoom
-        val canvasFont = labelTextScreenPx / zoom
-        numberPaint.textSize = canvasFont
+        val minScreenCanvas = labelMinScreenPx / zoom
+        val maxScreenCanvas = labelMaxScreenPx / zoom
         val rect = Rect()
         for (region in a.fillables) {
             if (region.completed) continue
             if (region.fontSize < minCanvasFont) continue
             val text = region.paletteIndex.toString()
+            // Two-digit labels need to fit horizontally too — narrow that side.
+            val widthBudget = region.labelInscribedRadius * 2f / text.length.coerceAtLeast(1)
+            val heightBudget = region.labelInscribedRadius * 2f
+            val canvasFont = (minOf(widthBudget, heightBudget) * LABEL_RADIUS_FACTOR)
+                .coerceIn(minScreenCanvas, maxScreenCanvas)
+            numberPaint.textSize = canvasFont
             numberPaint.color = region.labelColor ?: Color.DKGRAY
             numberPaint.getTextBounds(text, 0, text.length, rect)
             canvas.drawText(

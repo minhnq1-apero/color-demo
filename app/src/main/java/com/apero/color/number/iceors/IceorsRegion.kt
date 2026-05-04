@@ -66,23 +66,28 @@ class IceorsRegion(
     }
 
     /**
-     * On-screen label anchor — the "pole of inaccessibility" of the region:
-     * the interior point that is farthest from any boundary, i.e. visually
-     * the most-central spot. Approximated by rasterising the path into a
-     * small mask and taking the pixel with maximum 3-4 chamfer distance to
-     * the nearest outside pixel. Falls back to bounds center if the mask is
-     * empty (degenerate path).
+     * Pole of inaccessibility + inscribed radius. The pole is the interior
+     * point farthest from any boundary — visually the most-central spot, and
+     * a natural anchor for the label. The radius is the canvas-space distance
+     * from that pole to the nearest boundary, used by callers to size text so
+     * large regions get larger digits. Approximated by rasterising the path
+     * into a small mask and taking the pixel with maximum 3-4 chamfer
+     * distance to the nearest outside pixel.
      */
-    private val labelCenter: Pair<Float, Float> by lazy { computePoleOfInaccessibility() }
-    val labelCenterX: Float get() = labelCenter.first
-    val labelCenterY: Float get() = labelCenter.second
+    private data class LabelGeometry(val x: Float, val y: Float, val radius: Float)
+    private val labelGeometry: LabelGeometry by lazy { computePoleOfInaccessibility() }
+    val labelCenterX: Float get() = labelGeometry.x
+    val labelCenterY: Float get() = labelGeometry.y
+    /** Canvas-space radius of the largest circle that fits inside the region, centered at the label anchor. */
+    val labelInscribedRadius: Float get() = labelGeometry.radius
 
-    private fun computePoleOfInaccessibility(): Pair<Float, Float> {
+    private fun computePoleOfInaccessibility(): LabelGeometry {
         val cxFallback = bounds.centerX()
         val cyFallback = bounds.centerY()
         val bw = bounds.width()
         val bh = bounds.height()
-        if (bw <= 0f || bh <= 0f) return cxFallback to cyFallback
+        val fallback = LabelGeometry(cxFallback, cyFallback, min(bw, bh) / 2f)
+        if (bw <= 0f || bh <= 0f) return fallback
 
         // Resolution: cap longer side at MASK_MAX_SIDE px. Adds a 1px border
         // so edge pixels register as "outside" in the distance transform.
@@ -144,7 +149,7 @@ class IceorsRegion(
                 bestI = i
             }
         }
-        if (bestI < 0) return cxFallback to cyFallback
+        if (bestI < 0) return fallback
 
         val mx = bestI % w
         val my = bestI / w
@@ -153,7 +158,10 @@ class IceorsRegion(
         // Use mx + 0.5 so we anchor at the pixel's center, not its top-left corner.
         val canvasX = (mx + 0.5f - 1f) / scale + bounds.left
         val canvasY = (my + 0.5f - 1f) / scale + bounds.top
-        return canvasX to canvasY
+        // Chamfer-3 = 1 mask-pixel orthogonal step → divide by 3 for mask px,
+        // then by scale for canvas units.
+        val canvasRadius = (bestD / 3f) / scale
+        return LabelGeometry(canvasX, canvasY, canvasRadius)
     }
 
     companion object {

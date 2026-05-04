@@ -139,4 +139,28 @@ class IceorsRepository(context: Context) {
             ?.sorted()
             .orEmpty()
     }
+
+    /**
+     * List `*.zip` filenames bundled at `assets/[folder]/`. Used to surface
+     * pre-shipped sample pictures (e.g. CDN downloads we couldn't fetch from
+     * the device) for one-tap import via [importFromAsset].
+     */
+    fun listBundledZips(folder: String = "iceors_samples"): List<String> =
+        appContext.assets.list(folder)
+            ?.filter { it.endsWith("_b.zip") }
+            ?.sorted()
+            .orEmpty()
+
+    /**
+     * Import a single `*_b.zip` from `assets/[folder]/[filename]` into the
+     * cache. Returns the imported keys (typically one). Skips work if the
+     * picture is already cached. Caller should run on `Dispatchers.IO`.
+     */
+    fun importFromAsset(filename: String, folder: String = "iceors_samples"): List<String> {
+        val expectedKey = filename.removeSuffix("_b.zip")
+        if (expectedKey.isNotBlank() && cache.isPictureReady(expectedKey)) {
+            return listOf(expectedKey)
+        }
+        return appContext.assets.open("$folder/$filename").use { importFromZip(it) }
+    }
 }

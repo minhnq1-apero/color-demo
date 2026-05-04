@@ -108,14 +108,19 @@ object IceorsAsset {
 
     /**
      * Parses a color field. The data files use variable-width hex — most
-     * fillables are full "RRGGBB" but pure black is often shortened to "0"
-     * (and other low values can be 1–5 chars). Mirrors the original
-     * `Integer.parseInt(parts[1], 16) | 0xFF000000` in `C1/u.java:826`.
+     * fillables are full "RRGGBB" but pure black is shortened to "0", and
+     * "V" / oil-paint pics encode their stroke decorations with color `-1`
+     * (white) where the negative-sign is meaningful: the original parses with
+     * `Integer.parseInt(parts[1], 16) | 0xFF000000` (`C1/u.java:826`), so for
+     * `"-1"` you get `-1 | 0xFF000000 == -1 == 0xFFFFFFFF`. We mirror that
+     * here — rejecting `-1` would silently drop every line-art stroke and
+     * V-format pictures would render with no outlines.
      */
     private fun parseHexColor(hex: String): Int? {
-        if (hex.isEmpty() || !hex.all { it.isHex() }) return null
+        if (hex.isEmpty()) return null
+        val body = if (hex.startsWith("-")) hex.substring(1) else hex
+        if (body.isEmpty() || !body.all { it.isHex() }) return null
         val rgb = runCatching { hex.toLong(16) }.getOrNull() ?: return null
-        if (rgb < 0 || rgb > 0xFFFFFFL) return null
         return rgb.toInt() or 0xFF000000.toInt()
     }
 
