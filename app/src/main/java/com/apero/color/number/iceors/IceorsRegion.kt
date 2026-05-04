@@ -1,9 +1,15 @@
 package com.apero.color.number.iceors
 
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Region
+import kotlin.math.max
+import kotlin.math.min
 
 /**
  * One parsed line from a `<key>b` data file. Mirrors `A1.c` in the original
@@ -57,5 +63,101 @@ class IceorsRegion(
     fun contains(x: Int, y: Int): Boolean {
         if (!bounds.contains(x.toFloat(), y.toFloat())) return false
         return region.contains(x, y)
+    }
+
+    /**
+     * On-screen label anchor — the "pole of inaccessibility" of the region:
+     * the interior point that is farthest from any boundary, i.e. visually
+     * the most-central spot. Approximated by rasterising the path into a
+     * small mask and taking the pixel with maximum 3-4 chamfer distance to
+     * the nearest outside pixel. Falls back to bounds center if the mask is
+     * empty (degenerate path).
+     */
+    private val labelCenter: Pair<Float, Float> by lazy { computePoleOfInaccessibility() }
+    val labelCenterX: Float get() = labelCenter.first
+    val labelCenterY: Float get() = labelCenter.second
+
+    private fun computePoleOfInaccessibility(): Pair<Float, Float> {
+        val cxFallback = bounds.centerX()
+        val cyFallback = bounds.centerY()
+        val bw = bounds.width()
+        val bh = bounds.height()
+        if (bw <= 0f || bh <= 0f) return cxFallback to cyFallback
+
+        // Resolution: cap longer side at MASK_MAX_SIDE px. Adds a 1px border
+        // so edge pixels register as "outside" in the distance transform.
+        val longer = max(bw, bh)
+        val scale = (MASK_MAX_SIDE / longer).coerceAtMost(1f)
+        val w = (bw * scale).toInt().coerceAtLeast(2) + 2
+        val h = (bh * scale).toInt().coerceAtLeast(2) + 2
+
+        val mask = Bitmap.createBitmap(w, h, Bitmap.Config.ALPHA_8)
+        val canvas = Canvas(mask)
+        canvas.translate(1f, 1f)
+        canvas.scale(scale, scale)
+        canvas.translate(-bounds.left, -bounds.top)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            color = Color.BLACK
+        }
+        canvas.drawPath(path, paint)
+
+        val pixels = IntArray(w * h)
+        mask.getPixels(pixels, 0, w, 0, 0, w, h)
+        mask.recycle()
+
+        // 3-4 chamfer distance transform. Inside pixels start at INF, outside
+        // at 0; two passes propagate min distance.
+        val inf = Int.MAX_VALUE / 4
+        val dist = IntArray(w * h) { if ((pixels[it] ushr 24) > 0) inf else 0 }
+
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val i = y * w + x
+                if (dist[i] == 0) continue
+                if (x > 0) dist[i] = min(dist[i], dist[i - 1] + 3)
+                if (y > 0) {
+                    dist[i] = min(dist[i], dist[i - w] + 3)
+                    if (x > 0) dist[i] = min(dist[i], dist[i - w - 1] + 4)
+                    if (x < w - 1) dist[i] = min(dist[i], dist[i - w + 1] + 4)
+                }
+            }
+        }
+        for (y in h - 1 downTo 0) {
+            for (x in w - 1 downTo 0) {
+                val i = y * w + x
+                if (dist[i] == 0) continue
+                if (x < w - 1) dist[i] = min(dist[i], dist[i + 1] + 3)
+                if (y < h - 1) {
+                    dist[i] = min(dist[i], dist[i + w] + 3)
+                    if (x > 0) dist[i] = min(dist[i], dist[i + w - 1] + 4)
+                    if (x < w - 1) dist[i] = min(dist[i], dist[i + w + 1] + 4)
+                }
+            }
+        }
+
+        var bestI = -1
+        var bestD = 0
+        for (i in dist.indices) {
+            if (dist[i] > bestD) {
+                bestD = dist[i]
+                bestI = i
+            }
+        }
+        if (bestI < 0) return cxFallback to cyFallback
+
+        val mx = bestI % w
+        val my = bestI / w
+        // Inverse of the canvas transform applied above:
+        //   maskX = (canvasX - bounds.left) * scale + 1   →   canvasX = (maskX - 1) / scale + bounds.left
+        // Use mx + 0.5 so we anchor at the pixel's center, not its top-left corner.
+        val canvasX = (mx + 0.5f - 1f) / scale + bounds.left
+        val canvasY = (my + 0.5f - 1f) / scale + bounds.top
+        return canvasX to canvasY
+    }
+
+    companion object {
+        /** Cap on the longer side of the rasterised mask used for label centering. */
+        private const val MASK_MAX_SIDE = 96f
     }
 }

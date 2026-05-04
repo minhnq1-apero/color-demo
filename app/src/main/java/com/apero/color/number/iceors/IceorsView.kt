@@ -382,8 +382,8 @@ class IceorsView @JvmOverloads constructor(
             numberPaint.getTextBounds(text, 0, text.length, rect)
             canvas.drawText(
                 text,
-                region.labelX,
-                region.labelY + rect.height() / 2f,
+                region.labelCenterX,
+                region.labelCenterY + rect.height() / 2f,
                 numberPaint,
             )
         }
