@@ -1,0 +1,73 @@
+{
+  "levels": [
+    {
+      "level": 1,
+      "color": "#EA8622",
+      "textColor": "#000000",
+      "coordinates": [
+        { "x": 110, "y": 299, "textSize": 22 },
+        { "x": 593, "y": 262, "textSize": 22 },
+        { "x": 427, "y": 504, "textSize": 62 },
+        { "x": 324, "y": 838, "textSize": 22 },
+        { "x": 684, "y": 772, "textSize": 62 },
+        { "x": 1052, "y": 944, "textSize": 42 }
+      ]
+    },
+    {
+      "level": 2,
+      "color": "#6E2612",
+      "textColor": "#000000",
+      "coordinates": [
+        { "x": 376, "y": 252, "textSize": 42 },
+        { "x": 1039, "y": 371, "textSize": 42 }
+      ]
+    },
+    {
+      "level": 3,
+      "color": "#F0B54D",
+      "textColor": "#359833",
+      "coordinates": [
+        { "x": 304, "y": 917, "textSize": 22 },
+        { "x": 400, "y": 1066, "textSize": 22 },
+        { "x": 890, "y": 1097, "textSize": 22 },
+        { "x": 1061, "y": 1077, "textSize": 22 }
+      ]
+    },
+    {
+      "level": 4,
+      "color": "#FE7974",
+      "textColor": "#000000",
+      "coordinates": [
+        { "x": 151, "y": 336, "textSize": 15 },
+        { "x": 558, "y": 307, "textSize": 15 },
+        { "x": 308, "y": 633, "textSize": 22 }
+      ]
+    },
+    {
+      "level": 5,
+      "color": "#0264EA",
+      "textColor": "#000000",
+      "coordinates": [
+        { "x": 222, "y": 456, "textSize": 7 },
+        { "x": 353, "y": 444, "textSize": 10 }
+      ]
+    },
+    {
+      "level": 6,
+      "color": "#603813",
+      "textColor": "#000000",
+      "coordinates": [
+        { "x": 210, "y": 556, "textSize": 15 }
+      ]
+    },
+    {
+      "level": 7,
+      "color": "#FFFFFF",
+      "textColor": "#000000",
+      "coordinates": [
+        { "x": 231, "y": 414, "textSize": 18 },
+        { "x": 330, "y": 456, "textSize": 18 }
+      ]
+    }
+  ]
+}
