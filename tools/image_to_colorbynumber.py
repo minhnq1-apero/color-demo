@@ -63,30 +63,28 @@ def rgb_to_hex(r: int, g: int, b: int) -> str:
 
 def contour_to_svg(contour: np.ndarray, closed: bool) -> Optional[str]:
     """
-    Chuyển contour thành SVG path string với đường cong Bézier mượt mà.
-    Sử dụng Catmull-Rom spline → Cubic Bézier để loại bỏ răng cưa.
+    Chuyển contour thành SVG path string với Cubic Bézier curves.
+    Catmull-Rom spline → Cubic Bézier, clamp control points trong canvas.
     """
     pts = contour.squeeze().astype(np.float64)
     if pts.ndim < 2 or len(pts) < 3:
         return None
 
     n = len(pts)
+    # Giới hạn canvas để clamp control points
+    lo, hi = -5.0, OUTPUT_CANVAS + 5.0
     path = f"M{pts[0][0]:.1f},{pts[0][1]:.1f}"
 
-    # Catmull-Rom → Cubic Bézier conversion
-    # Với mỗi đoạn P[i]→P[i+1], dùng P[i-1] và P[i+2] để tính control points
     for i in range(n if closed else n - 1):
         p0 = pts[(i - 1) % n]
         p1 = pts[i]
         p2 = pts[(i + 1) % n]
         p3 = pts[(i + 2) % n]
 
-        # Control point 1: P1 + (P2 - P0) / 6
-        cp1x = p1[0] + (p2[0] - p0[0]) / 6.0
-        cp1y = p1[1] + (p2[1] - p0[1]) / 6.0
-        # Control point 2: P2 - (P3 - P1) / 6
-        cp2x = p2[0] - (p3[0] - p1[0]) / 6.0
-        cp2y = p2[1] - (p3[1] - p1[1]) / 6.0
+        cp1x = max(lo, min(hi, p1[0] + (p2[0] - p0[0]) / 6.0))
+        cp1y = max(lo, min(hi, p1[1] + (p2[1] - p0[1]) / 6.0))
+        cp2x = max(lo, min(hi, p2[0] - (p3[0] - p1[0]) / 6.0))
+        cp2y = max(lo, min(hi, p2[1] - (p3[1] - p1[1]) / 6.0))
 
         path += f"C{cp1x:.1f},{cp1y:.1f} {cp2x:.1f},{cp2y:.1f} {p2[0]:.1f},{p2[1]:.1f}"
 
@@ -168,19 +166,25 @@ def process_array(
         # Tạo mask trên ảnh gốc nhỏ (chưa scale, không có khối 2x2 răng cưa)
         mask = ((label_map_small == idx).astype(np.uint8) * 255)
 
+        # Dilate 1px: mở rộng mỗi vùng 1 pixel để các vùng liền kề chồng lên nhau
+        kernel = np.ones((3, 3), np.uint8)
+        mask = cv2.dilate(mask, kernel, iterations=1)
+
+        # GaussianBlur: làm mượt biên pixel TRƯỚC KHI tìm contour
+        # → contour đi theo đường cong tự nhiên thay vì bậc thang pixel
+        mask = cv2.GaussianBlur(mask, (5, 5), 1.5)
+        _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
+
         # RETR_CCOMP: 2 cấp hierarchy
-        #   - Top-level (parent == -1): outer boundary → fill
-        #   - Level 1 (parent != -1, grandparent == -1): hole boundary → ghép vào parent path để khoét lỗ
-        #   - Level 2+ (contour bên trong hole): cũng là outer → fill riêng
         contours, hierarchy = cv2.findContours(mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_TC89_KCOS)
         if hierarchy is None:
             continue
-        hierarchy = hierarchy[0]  # shape (N,4)
+        hierarchy = hierarchy[0]
 
         for ci, c in enumerate(contours):
             parent = hierarchy[ci][3]
 
-            # Skip hole contours (depth 1) — chúng sẽ được ghép vào parent path bên dưới
+            # Skip hole contours (depth 1)
             if parent != -1:
                 grandparent = hierarchy[parent][3]
                 if grandparent == -1:
@@ -190,30 +194,29 @@ def process_array(
             if area_small < min_fill_area_small:
                 continue
 
-            # Làm mượt outer contour
+            # approxPolyDP giảm điểm, Catmull-Rom Bézier sẽ bo tròn trong contour_to_svg
             c_s = cv2.approxPolyDP(c, FILL_EPSILON, closed=True)
             c_s_scaled = c_s.astype(np.float32) * scale_factor
             svg = contour_to_svg(c_s_scaled, closed=True)
             if not svg:
                 continue
 
-            # Ghép hole contours (con trực tiếp) vào path để khoét lỗ
-            # Android Path WINDING fill rule: hole có chiều quay ngược → tự động khoét
-            child_idx = hierarchy[ci][2]  # FirstChild
+            # Ghép hole contours vào path để khoét lỗ
+            child_idx = hierarchy[ci][2]
             while child_idx != -1:
                 hole_c = contours[child_idx]
                 hole_s = cv2.approxPolyDP(hole_c, FILL_EPSILON, closed=True)
                 hole_scaled = hole_s.astype(np.float32) * scale_factor
                 hole_svg = contour_to_svg(hole_scaled, closed=True)
                 if hole_svg:
-                    svg += hole_svg  # Append hole sub-path
-                child_idx = hierarchy[child_idx][0]  # Next sibling
+                    svg += hole_svg
+                child_idx = hierarchy[child_idx][0]
 
             area_real = area_small * (scale_factor ** 2)
             cx, cy = centroid(c_s_scaled)
             fill_entries.append((area_real, f"{svg}|{hex_color}|0|{int(cy) * OUTPUT_CANVAS + int(cx)}|{FONT_SIZE}"))
 
-            # Stroke chỉ dùng outer path (không ghép hole)
+            # Stroke chỉ dùng outer path
             if include_strokes:
                 outer_svg = contour_to_svg(c_s_scaled, closed=True)
                 stroke_lines.append(f"{outer_svg}|0|{stroke_width}|0|0")
