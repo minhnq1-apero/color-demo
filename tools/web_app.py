@@ -102,6 +102,53 @@ def to_jpeg(img_rgb: np.ndarray, quality: int = 92) -> bytes:
     return buf.tobytes() if ok else b""
 
 
+def _parse_svg_to_points(svg: str) -> list[list[float]]:
+    """Parse SVG path (M, L, C, Z) thành danh sách điểm, sampling Bézier curves."""
+    import re
+    pts = []
+    # Tách thành các token: M/L/C/Z + toạ độ
+    tokens = re.findall(r'[MLCZ]|[-+]?\d*\.?\d+', svg)
+    i = 0
+    cx, cy = 0.0, 0.0
+    while i < len(tokens):
+        cmd = tokens[i]
+        if cmd == 'M':
+            cx, cy = float(tokens[i+1]), float(tokens[i+2])
+            pts.append([cx, cy])
+            i += 3
+        elif cmd == 'L':
+            cx, cy = float(tokens[i+1]), float(tokens[i+2])
+            pts.append([cx, cy])
+            i += 3
+        elif cmd == 'C':
+            # Cubic Bézier: cp1, cp2, end
+            cp1x, cp1y = float(tokens[i+1]), float(tokens[i+2])
+            cp2x, cp2y = float(tokens[i+3]), float(tokens[i+4])
+            ex, ey = float(tokens[i+5]), float(tokens[i+6])
+            # Sample curve thành 8 đoạn nhỏ
+            for t_i in range(1, 9):
+                t = t_i / 8.0
+                u = 1 - t
+                x = u*u*u*cx + 3*u*u*t*cp1x + 3*u*t*t*cp2x + t*t*t*ex
+                y = u*u*u*cy + 3*u*u*t*cp1y + 3*u*t*t*cp2y + t*t*t*ey
+                pts.append([x, y])
+            cx, cy = ex, ey
+            i += 7
+        elif cmd == 'Z':
+            i += 1
+        else:
+            i += 1
+    return pts
+
+
+def _split_svg_subpaths(svg: str) -> list[str]:
+    """Tách composite SVG path thành các sub-path riêng biệt (tại mỗi lệnh M)."""
+    import re
+    # Tách tại mỗi 'M' nhưng giữ lại 'M'
+    parts = re.split(r'(?=M)', svg)
+    return [p for p in parts if p.strip()]
+
+
 def draw_android_preview(lines: list[str], canvas_size: int = 2048) -> np.ndarray:
     """Simulates Android IceorsView drawing logic by parsing and rendering the SVG lines."""
     img = np.ones((canvas_size, canvas_size, 3), dtype=np.uint8) * 255
@@ -111,28 +158,26 @@ def draw_android_preview(lines: list[str], canvas_size: int = 2048) -> np.ndarra
         svg = parts[0]
         color_hex = parts[1]
         stroke_width = float(parts[2])
-        
         is_closed = "Z" in svg
-        svg = svg.replace("M", "").replace("Z", "")
-        pts_str = svg.split("L")
-        pts = []
-        for p in pts_str:
-            if not p.strip(): continue
-            x, y = p.split(",")
-            pts.append([float(x), float(y)])
-        
-        if not pts: continue
-        pts = np.array(pts, dtype=np.int32).reshape((-1, 1, 2))
-        
+
         if stroke_width == 0:
-            # Android Fill paint
             r = int(color_hex[0:2], 16)
             g = int(color_hex[2:4], 16)
             b = int(color_hex[4:6], 16)
-            cv2.fillPoly(img, [pts], (r, g, b))
+            # Tách sub-paths (outer + holes) để fillPoly khoét lỗ đúng
+            sub_paths = _split_svg_subpaths(svg)
+            contours = []
+            for sp in sub_paths:
+                pts = _parse_svg_to_points(sp)
+                if pts:
+                    contours.append(np.array(pts, dtype=np.int32))
+            if contours:
+                cv2.fillPoly(img, contours, (r, g, b))
         else:
-            # Android Stroke paint (luôn vẽ màu đen)
-            cv2.polylines(img, [pts], isClosed=is_closed, color=(0,0,0), thickness=max(1, int(stroke_width)))
+            pts = _parse_svg_to_points(svg)
+            if not pts: continue
+            pts_arr = np.array(pts, dtype=np.int32).reshape((-1, 1, 2))
+            cv2.polylines(img, [pts_arr], isClosed=is_closed, color=(0,0,0), thickness=max(1, int(stroke_width)))
     return img
 
 
