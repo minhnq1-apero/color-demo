@@ -33,17 +33,15 @@ import cv2
 import numpy as np
 from sklearn.cluster import KMeans
 
-OUTPUT_CANVAS = 2048   # KHÔNG THAY ĐỔI — phải match Android IceorsAsset canvasSize
-MIN_FILL_AREA    = 300
-MIN_STROKE_AREA  = 80
-FILL_EPSILON     = 2.5   # cao hơn → ít điểm hơn → Bezier mượt hơn
-STROKE_EPSILON   = 1.0
-OUTLINE_SW       = 1.5
-FONT_SIZE        = 12
-CANNY_LOW        = 50
-CANNY_HIGH       = 150
-BEZIER_TENSION   = 0.25  # Catmull-Rom tension: 0=thẳng, 0.5=rất cong
-MASK_BLUR_RADIUS = 2     # smooth boundary trước khi findContours (0=tắt)
+OUTPUT_CANVAS   = 2048   # KHÔNG THAY ĐỔI — phải match Android IceorsAsset canvasSize
+MIN_FILL_AREA   = 300
+MIN_STROKE_AREA = 80
+FILL_EPSILON    = 1.5
+STROKE_EPSILON  = 0.8
+OUTLINE_SW      = 1.5
+FONT_SIZE       = 12
+CANNY_LOW       = 50
+CANNY_HIGH      = 150
 
 
 # ── Color helpers ──────────────────────────────────────────────────────────────
@@ -63,48 +61,13 @@ def rgb_to_hex(r: int, g: int, b: int) -> str:
 
 # ── SVG helpers ───────────────────────────────────────────────────────────────
 
-def smooth_mask(mask: np.ndarray, blur_radius: int = MASK_BLUR_RADIUS) -> np.ndarray:
-    """
-    Gaussian blur trên boundary của mask để giảm răng cưa trước findContours.
-    Interior (255) và exterior (0) giữ nguyên; chỉ boundary được smoothed.
-    """
-    if blur_radius <= 0:
-        return mask
-    k = blur_radius * 2 + 1
-    blurred = cv2.GaussianBlur(mask.astype(np.float32), (k, k), blur_radius * 0.5)
-    return (blurred > 127).astype(np.uint8) * 255
-
-
-def contour_to_svg(contour: np.ndarray, closed: bool, tension: float = BEZIER_TENSION) -> Optional[str]:
-    """
-    Chuyển contour thành SVG path dùng cubic Bezier (C command).
-    Catmull-Rom spline → control points Bezier → đường cong mượt tự nhiên.
-    Android PathParser hỗ trợ đầy đủ C command.
-
-    tension: 0 = thẳng (giống L command), 0.25 = mượt, 0.5 = rất cong
-    """
-    pts = contour.squeeze().astype(np.float64)
+def contour_to_svg(contour: np.ndarray, closed: bool) -> Optional[str]:
+    pts = contour.squeeze()
     if pts.ndim < 2 or len(pts) < 3:
         return None
-
-    n = len(pts)
     path = f"M{pts[0][0]:.1f},{pts[0][1]:.1f}"
-
-    for i in range(n if closed else n - 1):
-        # Catmull-Rom: dùng 4 điểm liên tiếp để tính control points
-        p0 = pts[(i - 1) % n]     if closed else pts[max(0, i - 1)]
-        p1 = pts[i]
-        p2 = pts[(i + 1) % n]     if closed else pts[min(n - 1, i + 1)]
-        p3 = pts[(i + 2) % n]     if closed else pts[min(n - 1, i + 2)]
-
-        # Bezier control points từ Catmull-Rom
-        cp1 = p1 + tension * (p2 - p0)
-        cp2 = p2 - tension * (p3 - p1)
-
-        path += (f"C{cp1[0]:.1f},{cp1[1]:.1f} "
-                 f"{cp2[0]:.1f},{cp2[1]:.1f} "
-                 f"{p2[0]:.1f},{p2[1]:.1f}")
-
+    for p in pts[1:]:
+        path += f"L{p[0]:.1f},{p[1]:.1f}"
     if closed:
         path += "Z"
     return path
@@ -184,8 +147,7 @@ def process_array(
         hex_color = rgb_to_hex(r, g, b)
 
         # K-means gán mọi pixel vào đúng 1 cluster → mask KHÔNG có gap → KHÔNG cần MORPH_CLOSE.
-        # smooth_mask: blur boundary để giảm răng cưa TRƯỚC findContours (không expand vùng).
-        mask = smooth_mask((label_map == idx).astype(np.uint8) * 255)
+        mask = ((label_map == idx).astype(np.uint8) * 255)
 
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_TC89_KCOS)
         for c in contours:
