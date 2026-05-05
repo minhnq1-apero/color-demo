@@ -33,7 +33,7 @@ st.caption(
 with st.sidebar:
     st.header("Settings")
 
-    uploaded = st.file_uploader("Upload image", type=["jpg", "jpeg", "png", "webp", "bmp"])
+    uploaded = st.file_uploader("Upload image", type=["jpg", "jpeg", "png", "webp", "bmp", "svg"])
 
     asset_key = st.text_input("Asset key", value="asset",
         help="Tên file bên trong ZIP: {key}b, {key}c. Không dùng dấu cách.")
@@ -187,8 +187,17 @@ if uploaded is None:
     st.info("Upload ảnh ở sidebar để bắt đầu.")
     st.stop()
 
-# Xử lý ảnh PNG có nền trong suốt (trong suốt -> màu trắng thay vì đen)
-pil_img = Image.open(uploaded).convert("RGBA")
+# Xử lý SVG: render thành PNG trước khi process
+filename = uploaded.name.lower()
+if filename.endswith(".svg"):
+    import cairosvg
+    svg_bytes = uploaded.read()
+    png_bytes = cairosvg.svg2png(bytestring=svg_bytes, output_width=2048, output_height=2048)
+    pil_img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
+else:
+    pil_img = Image.open(uploaded).convert("RGBA")
+
+# Nền trong suốt → trắng
 white_bg = Image.new("RGBA", pil_img.size, (255, 255, 255, 255))
 pil_img = Image.alpha_composite(white_bg, pil_img).convert("RGB")
 img_rgb = np.array(pil_img)
