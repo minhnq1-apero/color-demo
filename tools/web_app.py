@@ -61,8 +61,8 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("**Regions**")
-    min_area = st.number_input("Min fill area (px²)", 0, 2000, 10, 10,
-        help="Vùng nhỏ hơn số này bị bỏ qua (0 để giữ lại mọi chi tiết nhỏ nhất).")
+    min_area = st.number_input("Min fill area (px²)", 0, 2000, 100, 10,
+        help="Vùng nhỏ hơn số này bị bỏ qua. Tăng lên nếu quá nhiều fill regions.")
 
     generate = st.button("Convert", type="primary", use_container_width=True)
 
