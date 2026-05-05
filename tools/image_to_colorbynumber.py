@@ -167,23 +167,30 @@ def process_array(
     fill_entries.sort(key=lambda e: e[0], reverse=True)
     fill_lines = [line for _, line in fill_entries]
 
-    # ── Bước 4: Stroke lines (optional) ───────────────────────────────────
+    # ── Bước 4: Stroke lines dùng HoughLinesP (optional) ─────────────────
+    # findContours trace perimeter của edge blob (cả 2 bên nét 1px) → zigzag.
+    # HoughLinesP detect thẳng các segment → mỗi entry là M x1,y1 L x2,y2 hoàn toàn thẳng.
     stroke_lines: list[str] = []
     edges = None
     if include_strokes:
-        log("[3/3] Generating outlines…")
+        log("[3/3] Generating outlines (HoughLinesP)…")
         gray = cv2.cvtColor(quantized, cv2.COLOR_RGB2GRAY)
         edges = cv2.Canny(gray, canny_low, canny_high)
-        stroke_contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_TC89_KCOS)
-        for c in stroke_contours:
-            if cv2.contourArea(c) < MIN_STROKE_AREA:
-                continue
-            c_s = cv2.approxPolyDP(c, STROKE_EPSILON, closed=False)
-            svg = contour_to_svg(c_s, closed=False)
-            if not svg:
-                continue
-            # color "0" + strokeWidth!=0 → STROKE_LINE (không bị classify là BLACK_FILL)
-            stroke_lines.append(f"{svg}|0|{stroke_width}|0|0")
+
+        segments = cv2.HoughLinesP(
+            edges,
+            rho=1,
+            theta=np.pi / 180,
+            threshold=20,          # số vote tối thiểu
+            minLineLength=15,      # segment ngắn hơn bị bỏ (px)
+            maxLineGap=8,          # gap giữa 2 segment được nối (px)
+        )
+        if segments is not None:
+            for seg in segments:
+                x1, y1, x2, y2 = seg[0]
+                # Mỗi segment = 1 đường thẳng hoàn toàn, không zigzag
+                svg = f"M{x1},{y1}L{x2},{y2}"
+                stroke_lines.append(f"{svg}|0|{stroke_width}|0|0")
     else:
         log("[3/3] Skipping outlines.")
 
