@@ -184,19 +184,15 @@ def process_array(
         boundary[:, :-1] = np.maximum(boundary[:, :-1], v_diff * 255)
         edges = boundary  # dùng để overlay preview
 
-        # HoughLinesP trên boundary sạch: threshold cao → chỉ lấy nét dài, rõ
-        segments = cv2.HoughLinesP(
-            boundary,
-            rho=1,
-            theta=np.pi / 180,
-            threshold=40,        # tăng để bỏ đoạn ngắn/không rõ
-            minLineLength=20,    # bỏ segment < 20px
-            maxLineGap=10,       # nối gap ≤ 10px thành 1 segment
-        )
-        if segments is not None:
-            for seg in segments:
-                x1, y1, x2, y2 = seg[0]
-                stroke_lines.append(f"M{x1},{y1}L{x2},{y2}|0|{stroke_width}|0|0")
+        contours, _ = cv2.findContours(boundary, cv2.RETR_LIST, cv2.CHAIN_APPROX_TC89_KCOS)
+        for c in contours:
+            if cv2.arcLength(c, closed=True) < 20:
+                continue
+            c_s = cv2.approxPolyDP(c, STROKE_EPSILON, closed=True)
+            svg = contour_to_svg(c_s, closed=True)
+            if not svg:
+                continue
+            stroke_lines.append(f"{svg}|0|{stroke_width}|0|0")
     else:
         log("[3/3] Skipping outlines.")
 
