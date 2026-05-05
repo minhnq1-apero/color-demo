@@ -167,30 +167,36 @@ def process_array(
     fill_entries.sort(key=lambda e: e[0], reverse=True)
     fill_lines = [line for _, line in fill_entries]
 
-    # ── Bước 4: Stroke lines dùng HoughLinesP (optional) ─────────────────
-    # findContours trace perimeter của edge blob (cả 2 bên nét 1px) → zigzag.
-    # HoughLinesP detect thẳng các segment → mỗi entry là M x1,y1 L x2,y2 hoàn toàn thẳng.
+    # ── Bước 4: Stroke lines từ COLOR BOUNDARY (optional) ────────────────
+    # Dùng label_map để tìm ranh giới giữa các vùng màu (sạch, không noise).
+    # Boundary = pixel nằm cạnh pixel khác cluster → không có texture/nhiễu bên trong vùng.
+    # Sau đó HoughLinesP detect các đoạn thẳng từ boundary sạch này.
     stroke_lines: list[str] = []
     edges = None
     if include_strokes:
-        log("[3/3] Generating outlines (HoughLinesP)…")
-        gray = cv2.cvtColor(quantized, cv2.COLOR_RGB2GRAY)
-        edges = cv2.Canny(gray, canny_low, canny_high)
+        log("[3/3] Generating outlines from color boundaries…")
 
+        # Tính boundary từ label_map: chỗ 2 pixel liền kề có label khác nhau
+        h_diff = (label_map[:-1, :] != label_map[1:, :]).astype(np.uint8)  # dọc
+        v_diff = (label_map[:, :-1] != label_map[:, 1:]).astype(np.uint8)  # ngang
+        boundary = np.zeros((OUTPUT_CANVAS, OUTPUT_CANVAS), np.uint8)
+        boundary[:-1, :] = np.maximum(boundary[:-1, :], h_diff * 255)
+        boundary[:, :-1] = np.maximum(boundary[:, :-1], v_diff * 255)
+        edges = boundary  # dùng để overlay preview
+
+        # HoughLinesP trên boundary sạch: threshold cao → chỉ lấy nét dài, rõ
         segments = cv2.HoughLinesP(
-            edges,
+            boundary,
             rho=1,
             theta=np.pi / 180,
-            threshold=20,          # số vote tối thiểu
-            minLineLength=15,      # segment ngắn hơn bị bỏ (px)
-            maxLineGap=8,          # gap giữa 2 segment được nối (px)
+            threshold=40,        # tăng để bỏ đoạn ngắn/không rõ
+            minLineLength=20,    # bỏ segment < 20px
+            maxLineGap=10,       # nối gap ≤ 10px thành 1 segment
         )
         if segments is not None:
             for seg in segments:
                 x1, y1, x2, y2 = seg[0]
-                # Mỗi segment = 1 đường thẳng hoàn toàn, không zigzag
-                svg = f"M{x1},{y1}L{x2},{y2}"
-                stroke_lines.append(f"{svg}|0|{stroke_width}|0|0")
+                stroke_lines.append(f"M{x1},{y1}L{x2},{y2}|0|{stroke_width}|0|0")
     else:
         log("[3/3] Skipping outlines.")
 
