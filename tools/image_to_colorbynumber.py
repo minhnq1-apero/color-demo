@@ -122,84 +122,88 @@ def process_array(
     img_small = cv2.resize(img_rgb, (kmeans_size, kmeans_size), interpolation=cv2.INTER_AREA)
     label_map_small, centers = quantize(img_small, n_colors)
 
-    # ── Bước 2: Scale label map lên OUTPUT_CANVAS ──────────────────────────
-    # QUAN TRỌNG: paths phải ở tọa độ OUTPUT_CANVAS (2048) để Android hit-test đúng.
-    # Dùng INTER_NEAREST để giữ nguyên cluster index (không nội suy).
+    # ── Bước 2: Preview Image ──────────────────────────────────────────────
+    # Quantized preview ở OUTPUT_CANVAS (chỉ dùng để hiển thị UI)
+    quantized_small = centers[label_map_small]
     if kmeans_size != OUTPUT_CANVAS:
-        label_map = cv2.resize(
-            label_map_small.astype(np.uint8),
-            (OUTPUT_CANVAS, OUTPUT_CANVAS),
-            interpolation=cv2.INTER_NEAREST,
-        ).astype(np.int32)
+        quantized = cv2.resize(quantized_small, (OUTPUT_CANVAS, OUTPUT_CANVAS), interpolation=cv2.INTER_NEAREST)
     else:
-        label_map = label_map_small.astype(np.int32)
+        quantized = quantized_small
 
-    # Quantized preview ở OUTPUT_CANVAS
-    quantized = centers[label_map]   # (OUTPUT_CANVAS, OUTPUT_CANVAS, 3) uint8
-
-    # ── Bước 3: Fill regions ──────────────────────────────────────────────
-    log("[2/3] Extracting fill regions…")
-    # (area, line) — sẽ sort sau để đảm bảo draw order đúng
+    # ── Bước 3: Fill regions (và Outline strokes) ─────────────────────────
+    log("[2/3] Extracting regions and outlines…")
     fill_entries: list[tuple[float, str]] = []
+    stroke_lines: list[str] = []
+    
+    scale_factor = OUTPUT_CANVAS / kmeans_size
+    # min_fill_area đang tính theo OUTPUT_CANVAS, phải scale xuống cho mask nhỏ
+    min_fill_area_small = min_fill_area / (scale_factor ** 2)
 
     for idx, color in enumerate(centers):
         r, g, b = int(color[0]), int(color[1]), int(color[2])
         hex_color = rgb_to_hex(r, g, b)
 
-        # K-means gán mọi pixel vào đúng 1 cluster → mask KHÔNG có gap → KHÔNG cần MORPH_CLOSE.
-        mask = ((label_map == idx).astype(np.uint8) * 255)
+        # Tạo mask trên ảnh gốc nhỏ (chưa scale, không có khối 2x2 răng cưa)
+        mask = ((label_map_small == idx).astype(np.uint8) * 255)
 
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_TC89_KCOS)
-        for c in contours:
-            area = cv2.contourArea(c)
-            if area < min_fill_area:
+        # RETR_CCOMP: lấy contour ở MỌI cấp lồng nhau (mắt, mũi nằm trong "lỗ hổng" của vùng da)
+        # hierarchy[i] = [Next, Prev, FirstChild, Parent]
+        # Parent == -1 → outer contour (fill), Parent != -1 nhưng ông nội == -1 → hole (skip)
+        contours, hierarchy = cv2.findContours(mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_TC89_KCOS)
+        if hierarchy is None:
+            continue
+        hierarchy = hierarchy[0]  # shape (N,4)
+        for ci, c in enumerate(contours):
+            # Chỉ lấy outer contours (top-level hoặc contour bên trong hole)
+            # RETR_CCOMP: top-level contours có parent == -1
+            #             hole contours có parent != -1 VÀ hierarchy[parent][3] == -1
+            # Ta chỉ skip hole contours (depth 1), giữ lại depth 0 và depth 2+
+            parent = hierarchy[ci][3]
+            if parent != -1:
+                grandparent = hierarchy[parent][3]
+                if grandparent == -1:
+                    # Đây là hole contour (depth 1) → skip, không fill
+                    continue
+            area_small = cv2.contourArea(c)
+            if area_small < min_fill_area_small:
                 continue
+            
+            # Làm mượt/đơn giản hóa đường bao ngay trên kích thước nhỏ
             c_s = cv2.approxPolyDP(c, FILL_EPSILON, closed=True)
-            svg = contour_to_svg(c_s, closed=True)
+            
+            # Scale coordinates lên OUTPUT_CANVAS mathematically (vẫn mượt mà không bị răng cưa blocky)
+            c_s_scaled = c_s.astype(np.float32) * scale_factor
+            
+            svg = contour_to_svg(c_s_scaled, closed=True)
             if not svg:
                 continue
-            cx, cy = centroid(c_s)
-            fill_entries.append((area, f"{svg}|{hex_color}|0|{cy * OUTPUT_CANVAS + cx}|{FONT_SIZE}"))
+            
+            # Area thật ở kích thước 2048
+            area_real = area_small * (scale_factor ** 2)
+            cx, cy = centroid(c_s_scaled)
+            fill_entries.append((area_real, f"{svg}|{hex_color}|0|{int(cy) * OUTPUT_CANVAS + int(cx)}|{FONT_SIZE}"))
+
+            # Dùng chính xác nét vẽ của vùng màu để làm stroke (đảm bảo không bao giờ bị viền đôi, hở nét)
+            if include_strokes:
+                stroke_lines.append(f"{svg}|0|{stroke_width}|0|0")
 
     # Sort: lớn trước → nhỏ sau.
-    # IceorsView draw theo thứ tự file: region sau đè lên region trước.
-    # → background lớn draw trước, detail nhỏ (nến, hoa...) draw sau → detail luôn hiển thị trên cùng.
     fill_entries.sort(key=lambda e: e[0], reverse=True)
     fill_lines = [line for _, line in fill_entries]
 
-    # ── Bước 4: Stroke lines từ COLOR BOUNDARY (optional) ────────────────
-    # Dùng label_map để tìm ranh giới giữa các vùng màu (sạch, không noise).
-    # Boundary = pixel nằm cạnh pixel khác cluster → không có texture/nhiễu bên trong vùng.
-    # Sau đó HoughLinesP detect các đoạn thẳng từ boundary sạch này.
-    stroke_lines: list[str] = []
-    edges = None
-    if include_strokes:
-        log("[3/3] Generating outlines from color boundaries…")
-
-        # Tính boundary từ label_map: chỗ 2 pixel liền kề có label khác nhau
-        h_diff = (label_map[:-1, :] != label_map[1:, :]).astype(np.uint8)  # dọc
-        v_diff = (label_map[:, :-1] != label_map[:, 1:]).astype(np.uint8)  # ngang
-        boundary = np.zeros((OUTPUT_CANVAS, OUTPUT_CANVAS), np.uint8)
-        boundary[:-1, :] = np.maximum(boundary[:-1, :], h_diff * 255)
-        boundary[:, :-1] = np.maximum(boundary[:, :-1], v_diff * 255)
-        edges = boundary  # dùng để overlay preview
-
-        contours, _ = cv2.findContours(boundary, cv2.RETR_LIST, cv2.CHAIN_APPROX_TC89_KCOS)
-        for c in contours:
-            if cv2.arcLength(c, closed=True) < 20:
-                continue
-            c_s = cv2.approxPolyDP(c, STROKE_EPSILON, closed=True)
-            svg = contour_to_svg(c_s, closed=True)
-            if not svg:
-                continue
-            stroke_lines.append(f"{svg}|0|{stroke_width}|0|0")
-    else:
-        log("[3/3] Skipping outlines.")
-
-    # Preview: quantized + edge overlay
+    # Preview overlay (vẽ stroke để user xem)
     preview = quantized.copy()
-    if edges is not None:
-        preview[edges > 0] = (0, 0, 0)
+    if include_strokes:
+        h_diff = (label_map_small[:-1, :] != label_map_small[1:, :]).astype(np.uint8)
+        v_diff = (label_map_small[:, :-1] != label_map_small[:, 1:]).astype(np.uint8)
+        boundary_small = np.zeros((kmeans_size, kmeans_size), np.uint8)
+        boundary_small[:-1, :] = np.maximum(boundary_small[:-1, :], h_diff * 255)
+        boundary_small[:, :-1] = np.maximum(boundary_small[:, :-1], v_diff * 255)
+        if scale_factor != 1.0:
+            boundary_large = cv2.resize(boundary_small, (OUTPUT_CANVAS, OUTPUT_CANVAS), interpolation=cv2.INTER_NEAREST)
+            preview[boundary_large > 0] = (0, 0, 0)
+        else:
+            preview[boundary_small > 0] = (0, 0, 0)
 
     palette = [(int(c[0]), int(c[1]), int(c[2])) for c in centers]
     all_lines = fill_lines + stroke_lines

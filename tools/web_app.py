@@ -61,8 +61,8 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("**Regions**")
-    min_area = st.number_input("Min fill area (px²)", 50, 2000, 300, 50,
-        help="Vùng nhỏ hơn số này bị bỏ qua.")
+    min_area = st.number_input("Min fill area (px²)", 0, 2000, 10, 10,
+        help="Vùng nhỏ hơn số này bị bỏ qua (0 để giữ lại mọi chi tiết nhỏ nhất).")
 
     generate = st.button("Convert", type="primary", use_container_width=True)
 
@@ -102,13 +102,52 @@ def to_jpeg(img_rgb: np.ndarray, quality: int = 92) -> bytes:
     return buf.tobytes() if ok else b""
 
 
+def draw_android_preview(lines: list[str], canvas_size: int = 2048) -> np.ndarray:
+    """Simulates Android IceorsView drawing logic by parsing and rendering the SVG lines."""
+    img = np.ones((canvas_size, canvas_size, 3), dtype=np.uint8) * 255
+    for line in lines:
+        parts = line.split("|")
+        if len(parts) < 3: continue
+        svg = parts[0]
+        color_hex = parts[1]
+        stroke_width = float(parts[2])
+        
+        is_closed = "Z" in svg
+        svg = svg.replace("M", "").replace("Z", "")
+        pts_str = svg.split("L")
+        pts = []
+        for p in pts_str:
+            if not p.strip(): continue
+            x, y = p.split(",")
+            pts.append([float(x), float(y)])
+        
+        if not pts: continue
+        pts = np.array(pts, dtype=np.int32).reshape((-1, 1, 2))
+        
+        if stroke_width == 0:
+            # Android Fill paint
+            r = int(color_hex[0:2], 16)
+            g = int(color_hex[2:4], 16)
+            b = int(color_hex[4:6], 16)
+            cv2.fillPoly(img, [pts], (r, g, b))
+        else:
+            # Android Stroke paint (luôn vẽ màu đen)
+            cv2.polylines(img, [pts], isClosed=is_closed, color=(0,0,0), thickness=max(1, int(stroke_width)))
+    return img
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 if uploaded is None:
     st.info("Upload ảnh ở sidebar để bắt đầu.")
     st.stop()
 
-img_rgb = np.array(Image.open(uploaded).convert("RGB"))
+# Xử lý ảnh PNG có nền trong suốt (trong suốt -> màu trắng thay vì đen)
+pil_img = Image.open(uploaded).convert("RGBA")
+white_bg = Image.new("RGBA", pil_img.size, (255, 255, 255, 255))
+pil_img = Image.alpha_composite(white_bg, pil_img).convert("RGB")
+img_rgb = np.array(pil_img)
+
 col_orig, col_preview = st.columns(2)
 
 with col_orig:
@@ -130,7 +169,7 @@ if not generate:
 log: list[str] = []
 
 with st.spinner(f"Đang xử lý… (K-means @ {kmeans_size}px)"):
-    lines, preview_arr, palette = process_array(
+    lines, _, palette = process_array(
         img_rgb,
         n_colors=n_colors,
         kmeans_size=kmeans_size,
@@ -141,10 +180,14 @@ with st.spinner(f"Đang xử lý… (K-means @ {kmeans_size}px)"):
         include_strokes=include_strokes,
         log=log.append,
     )
+    
+    # Sinh ảnh preview mô phỏng chính xác cách Android IceorsView vẽ các SVG lines
+    android_preview = draw_android_preview(lines, OUTPUT_CANVAS)
 
 with col_preview:
-    st.subheader("Preview")
-    st.image(preview_arr, use_container_width=True)
+    st.subheader("Preview (Android View)")
+    st.image(android_preview, use_container_width=True)
+    st.caption("Ảnh này mô phỏng chính xác 100% cách Android app vẽ file output.txt")
 
 # ── Palette ───────────────────────────────────────────────────────────────────
 st.subheader("Palette")

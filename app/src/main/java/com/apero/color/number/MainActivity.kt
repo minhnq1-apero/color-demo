@@ -43,16 +43,6 @@ private fun Home(modifier: Modifier = Modifier) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Text("Color by Number — mini sample")
-        Spacer(Modifier.height(24.dp))
-        Button(onClick = { context.startActivity(Intent(context, DrawActivity::class.java)) }) {
-            Text("SYCB style — flood fill")
-        }
-        Spacer(Modifier.height(12.dp))
-        Button(onClick = { context.startActivity(Intent(context, IceorsDrawActivity::class.java)) }) {
-            Text("Iceors style — SVG paths")
-        }
-        Spacer(Modifier.height(12.dp))
         Button(onClick = { context.startActivity(Intent(context, CdnGalleryActivity::class.java)) }) {
             Text("CDN download — fetch from server")
         }
