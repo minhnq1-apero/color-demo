@@ -177,22 +177,59 @@ def make_zip(with_image: bool, ref_jpeg: bytes | None = None) -> bytes:
     return buf.getvalue()
 
 
-# ── Reference JPEG (rasterize SVG via cairosvg if available) ──────────────────
+# ── Reference JPEG ────────────────────────────────────────────────────────────
+# QUAN TRỌNG: phải pad VUÔNG giống pipeline paths (svg_to_lines step 1).
+# Nếu render thẳng 2048×2048 từ SVG aspect không vuông → image bị stretch,
+# tọa độ image lệch tọa độ paths → app vẽ sai vị trí.
 ref_jpeg: bytes | None = None
 try:
     import cairosvg
     from PIL import Image as _PILImage
+    from svgelements import SVG as _SVG
+
+    # Lấy aspect ratio gốc của SVG
+    parsed = _SVG.parse(io.BytesIO(svg_bytes))
+    if parsed.viewbox is not None:
+        sw = float(parsed.viewbox.width)
+        sh = float(parsed.viewbox.height)
+    else:
+        sw = float(parsed.width or OUTPUT_CANVAS)
+        sh = float(parsed.height or OUTPUT_CANVAS)
+
+    side = max(sw, sh) or 1
+    scale = OUTPUT_CANVAS / side
+    render_w = max(1, int(round(sw * scale)))
+    render_h = max(1, int(round(sh * scale)))
+
+    # Render ở proportional size (giữ đúng aspect)
     png_bytes = cairosvg.svg2png(
         bytestring=svg_bytes,
-        output_width=OUTPUT_CANVAS,
-        output_height=OUTPUT_CANVAS,
+        output_width=render_w,
+        output_height=render_h,
     )
     pil = _PILImage.open(io.BytesIO(png_bytes)).convert("RGB")
+
+    # Pad trắng vào hình vuông OUTPUT_CANVAS — center alignment giống paths
+    square = _PILImage.new("RGB", (OUTPUT_CANVAS, OUTPUT_CANVAS), (255, 255, 255))
+    ox = (OUTPUT_CANVAS - render_w) // 2
+    oy = (OUTPUT_CANVAS - render_h) // 2
+    square.paste(pil, (ox, oy))
+
     jbuf = io.BytesIO()
-    pil.save(jbuf, format="JPEG", quality=92)
+    square.save(jbuf, format="JPEG", quality=92)
     ref_jpeg = jbuf.getvalue()
+    log.append(f"reference JPEG: {render_w}×{render_h} → padded {OUTPUT_CANVAS}²")
 except Exception as exc:
     log.append(f"(no reference JPEG: {exc})")
+    # Fallback: blank white square nên {key}c luôn là JPEG (không phải SVG)
+    try:
+        from PIL import Image as _PILImage
+        blank = _PILImage.new("RGB", (OUTPUT_CANVAS, OUTPUT_CANVAS), (255, 255, 255))
+        jbuf = io.BytesIO()
+        blank.save(jbuf, format="JPEG", quality=85)
+        ref_jpeg = jbuf.getvalue()
+    except Exception:
+        ref_jpeg = None
 
 # ── Download ──────────────────────────────────────────────────────────────────
 st.subheader("Download")
