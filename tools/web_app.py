@@ -68,6 +68,15 @@ with st.sidebar:
     )
 
     st.markdown("---")
+    st.markdown("**Color palette**")
+    merge_tolerance = st.slider(
+        "Merge similar colors (RGB distance)", 0, 50, 15,
+        help="Vectorizer thường output mỗi vùng 1 shade hơi khác nhau "
+             "(anti-aliasing). Giá trị > 0 sẽ gộp các shade gần giống thành "
+             "1 màu. Lớn hơn = gộp aggressive hơn. Đặt 0 để tắt.",
+    )
+
+    st.markdown("---")
     subtract = st.toggle(
         "Subtract overlaps", value=True,
         help="Mỗi vùng chỉ phủ pixels unique của nó (không overlap vùng khác). "
@@ -97,6 +106,7 @@ try:
         io.BytesIO(svg_bytes),
         subtract_overlaps=subtract,
         auto_outline_width=outline_width if add_outline else 0.0,
+        color_merge_tolerance=float(merge_tolerance),
         log=log.append,
     )
 except Exception as e:

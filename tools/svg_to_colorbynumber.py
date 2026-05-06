@@ -163,11 +163,58 @@ def _color_to_rgb(c) -> Optional[tuple[int, int, int]]:
         return None
 
 
+def _merge_similar_colors(
+    records: list[dict], tolerance: float, log=print,
+) -> None:
+    """
+    Greedy merge: colors within `tolerance` (Euclidean RGB distance) of an
+    already-kept color get rewritten to that color's hex. Larger-area colors
+    win — they get to anchor a palette slot first. Mutates `records`.
+    """
+    if tolerance <= 0 or not records:
+        return
+
+    # Aggregate area per color
+    by_color: dict[str, float] = {}
+    for r in records:
+        by_color[r["color_hex"]] = by_color.get(r["color_hex"], 0.0) + r["area"]
+
+    # Process colors largest-area first
+    sorted_colors = sorted(by_color.keys(), key=lambda c: by_color[c], reverse=True)
+
+    kept_hex: list[str] = []
+    kept_rgb: list[tuple[int, int, int]] = []
+    remap: dict[str, str] = {}
+
+    for hex_c in sorted_colors:
+        r, g, b = int(hex_c[0:2], 16), int(hex_c[2:4], 16), int(hex_c[4:6], 16)
+        best = -1
+        best_d = tolerance + 1
+        for i, (kr, kg, kb) in enumerate(kept_rgb):
+            d = ((r - kr) ** 2 + (g - kg) ** 2 + (b - kb) ** 2) ** 0.5
+            if d <= tolerance and d < best_d:
+                best, best_d = i, d
+        if best < 0:
+            kept_hex.append(hex_c)
+            kept_rgb.append((r, g, b))
+            remap[hex_c] = hex_c
+        else:
+            remap[hex_c] = kept_hex[best]
+
+    if len(kept_hex) < len(by_color):
+        log(f"[svg→cbn] color merge: {len(by_color)} → {len(kept_hex)} "
+            f"(tolerance={tolerance})")
+
+    for r in records:
+        r["color_hex"] = remap[r["color_hex"]]
+
+
 def svg_to_lines(
     svg_input,
     output_canvas: int = OUTPUT_CANVAS,
     subtract_overlaps: bool = True,
     auto_outline_width: float = 0.0,
+    color_merge_tolerance: float = 0.0,
     log=print,
 ) -> tuple[list[str], tuple[int, int, int, int]]:
     """
@@ -252,6 +299,9 @@ def svg_to_lines(
         if stroke_rgb is not None and stroke_w > 0:
             stroke_lines.append(f"{d}|0|{stroke_w:.2f}|0|0")
 
+    # Merge similar colors before sorting/subtracting so the palette is clean.
+    _merge_similar_colors(fill_records, color_merge_tolerance, log)
+
     # Sort fills largest-first → fills[0] is bottom layer, fills[-1] is on top
     fill_records.sort(key=lambda r: r["area"], reverse=True)
 
@@ -311,6 +361,9 @@ def main() -> None:
     ap.add_argument("--outline", type=float, default=0.0,
                     help="Auto-add black stroke of given px width to every fill path "
                          "(0 = off)")
+    ap.add_argument("--merge-tolerance", type=float, default=0.0,
+                    help="Merge colors within this RGB Euclidean distance "
+                         "(typical 10-30; 0 = off)")
     args = ap.parse_args()
 
     try:
@@ -318,6 +371,7 @@ def main() -> None:
             args.input, output_canvas=args.canvas,
             subtract_overlaps=not args.no_subtract,
             auto_outline_width=args.outline,
+            color_merge_tolerance=args.merge_tolerance,
         )
     except (FileNotFoundError, ValueError) as e:
         print(f"Error: {e}", file=sys.stderr)
