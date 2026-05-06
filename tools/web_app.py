@@ -50,6 +50,13 @@ with st.sidebar:
     st.header("Settings")
 
     uploaded = st.file_uploader("Upload SVG file", type=["svg"])
+    ref_image_file = st.file_uploader(
+        "Optional reference image (PNG/JPG)",
+        type=["png", "jpg", "jpeg", "webp", "bmp"],
+        help="Nếu để trống → tool render JPEG từ chính SVG. "
+             "Nếu upload riêng (vd: ảnh AI gốc trước khi vectorize) → "
+             "ảnh đó sẽ được align center-pad vuông để khớp với paths.",
+    )
     asset_key = st.text_input(
         "Asset key", value="asset",
         help="Tên file bên trong ZIP: {key}b. Không dùng dấu cách.",
@@ -178,16 +185,46 @@ def make_zip(with_image: bool, ref_jpeg: bytes | None = None) -> bytes:
 
 
 # ── Reference JPEG ────────────────────────────────────────────────────────────
-# QUAN TRỌNG: phải pad VUÔNG giống pipeline paths (svg_to_lines step 1).
-# Nếu render thẳng 2048×2048 từ SVG aspect không vuông → image bị stretch,
-# tọa độ image lệch tọa độ paths → app vẽ sai vị trí.
+# Cả paths và image phải share đúng hệ tọa độ:
+#   side = max(sw, sh)              ← cạnh hình vuông trong source space
+#   scale = OUTPUT_CANVAS / side    ← scale lên 2048
+#   image padded center: offset_x = (OUTPUT_CANVAS - rendered_w) / 2 ...
+# Nguyên tắc: ảnh nào (SVG render hay user upload) cũng được fit-into-aspect-of-SVG
+# rồi center-pad → khớp với pad của paths.
+def _to_square_jpeg(pil_img, sw: float, sh: float) -> bytes:
+    """Fit `pil_img` vào aspect (sw:sh), rồi center-pad trắng thành OUTPUT_CANVAS²."""
+    from PIL import Image as _PILImage
+    side = max(sw, sh) or 1
+    scale = OUTPUT_CANVAS / side
+    target_w = max(1, int(round(sw * scale)))
+    target_h = max(1, int(round(sh * scale)))
+
+    # Fit pil_img INTO target_w×target_h preserving its own aspect (letterbox if cần)
+    iw, ih = pil_img.size
+    ratio = min(target_w / iw, target_h / ih)
+    new_w = max(1, int(round(iw * ratio)))
+    new_h = max(1, int(round(ih * ratio)))
+    fit = pil_img.resize((new_w, new_h), _PILImage.LANCZOS)
+
+    # Inner letterbox: trắng nền target_w×target_h, paste fit ở giữa
+    inner = _PILImage.new("RGB", (target_w, target_h), (255, 255, 255))
+    inner.paste(fit, ((target_w - new_w) // 2, (target_h - new_h) // 2))
+
+    # Outer pad: trắng nền OUTPUT_CANVAS², paste inner ở giữa
+    square = _PILImage.new("RGB", (OUTPUT_CANVAS, OUTPUT_CANVAS), (255, 255, 255))
+    square.paste(inner, ((OUTPUT_CANVAS - target_w) // 2, (OUTPUT_CANVAS - target_h) // 2))
+
+    buf = io.BytesIO()
+    square.save(buf, format="JPEG", quality=92)
+    return buf.getvalue()
+
+
 ref_jpeg: bytes | None = None
 try:
-    import cairosvg
     from PIL import Image as _PILImage
     from svgelements import SVG as _SVG
 
-    # Lấy aspect ratio gốc của SVG
+    # SVG aspect (paths được pad theo cái này)
     parsed = _SVG.parse(io.BytesIO(svg_bytes))
     if parsed.viewbox is not None:
         sw = float(parsed.viewbox.width)
@@ -196,32 +233,33 @@ try:
         sw = float(parsed.width or OUTPUT_CANVAS)
         sh = float(parsed.height or OUTPUT_CANVAS)
 
-    side = max(sw, sh) or 1
-    scale = OUTPUT_CANVAS / side
-    render_w = max(1, int(round(sw * scale)))
-    render_h = max(1, int(round(sh * scale)))
-
-    # Render ở proportional size (giữ đúng aspect)
-    png_bytes = cairosvg.svg2png(
-        bytestring=svg_bytes,
-        output_width=render_w,
-        output_height=render_h,
-    )
-    pil = _PILImage.open(io.BytesIO(png_bytes)).convert("RGB")
-
-    # Pad trắng vào hình vuông OUTPUT_CANVAS — center alignment giống paths
-    square = _PILImage.new("RGB", (OUTPUT_CANVAS, OUTPUT_CANVAS), (255, 255, 255))
-    ox = (OUTPUT_CANVAS - render_w) // 2
-    oy = (OUTPUT_CANVAS - render_h) // 2
-    square.paste(pil, (ox, oy))
-
-    jbuf = io.BytesIO()
-    square.save(jbuf, format="JPEG", quality=92)
-    ref_jpeg = jbuf.getvalue()
-    log.append(f"reference JPEG: {render_w}×{render_h} → padded {OUTPUT_CANVAS}²")
+    if ref_image_file is not None:
+        # User upload ảnh riêng — fit vào SVG aspect rồi pad vuông
+        pil = _PILImage.open(ref_image_file).convert("RGBA")
+        white = _PILImage.new("RGBA", pil.size, (255, 255, 255, 255))
+        pil = _PILImage.alpha_composite(white, pil).convert("RGB")
+        ref_jpeg = _to_square_jpeg(pil, sw, sh)
+        log.append(
+            f"reference JPEG: user upload {pil.size}, fit aspect "
+            f"{sw:.0f}:{sh:.0f}, pad → {OUTPUT_CANVAS}²"
+        )
+    else:
+        # Render từ chính SVG
+        import cairosvg
+        side = max(sw, sh) or 1
+        scale = OUTPUT_CANVAS / side
+        render_w = max(1, int(round(sw * scale)))
+        render_h = max(1, int(round(sh * scale)))
+        png_bytes = cairosvg.svg2png(
+            bytestring=svg_bytes,
+            output_width=render_w,
+            output_height=render_h,
+        )
+        pil = _PILImage.open(io.BytesIO(png_bytes)).convert("RGB")
+        ref_jpeg = _to_square_jpeg(pil, sw, sh)
+        log.append(f"reference JPEG: rendered SVG {render_w}×{render_h} → {OUTPUT_CANVAS}²")
 except Exception as exc:
     log.append(f"(no reference JPEG: {exc})")
-    # Fallback: blank white square nên {key}c luôn là JPEG (không phải SVG)
     try:
         from PIL import Image as _PILImage
         blank = _PILImage.new("RGB", (OUTPUT_CANVAS, OUTPUT_CANVAS), (255, 255, 255))
