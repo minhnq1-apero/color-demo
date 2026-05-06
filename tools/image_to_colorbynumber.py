@@ -26,7 +26,13 @@ Classification (IceorsAsset.classify):
 from __future__ import annotations
 
 import argparse
+import os
+import re
+import shutil
+import subprocess
 import sys
+import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 import cv2
@@ -99,6 +105,182 @@ def centroid(contour: np.ndarray) -> tuple[int, int]:
         x, y, w, h = cv2.boundingRect(contour)
         return x + w // 2, y + h // 2
     return int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"])
+
+
+# ── Potrace stroke helpers ────────────────────────────────────────────────────
+
+_POTRACE = shutil.which('potrace') or '/opt/homebrew/bin/potrace'
+
+
+def _save_pbm(path: str, mask: np.ndarray) -> None:
+    h, w = mask.shape
+    pad = np.zeros((h, ((w + 7) // 8) * 8), dtype=bool)
+    pad[:, :w] = mask > 0
+    packed = np.packbits(pad, axis=1)
+    with open(path, 'wb') as f:
+        f.write(f"P4\n{w} {h}\n".encode())
+        f.write(packed.tobytes())
+
+
+def _transform_potrace_path(
+    path_d: str, kmeans_size: int, scale: float
+) -> tuple[str, list[tuple[float, float]]]:
+    """
+    Parse potrace SVG path (M/m/L/l/C/c/Z/z), transform coordinates:
+        canvas_x = potrace_x / 10 * scale
+        canvas_y = (kmeans_size - potrace_y / 10) * scale
+    Returns (transformed_path_d, list_of_canvas_coords).
+    """
+    tokens = re.findall(
+        r'[MLCSZmlcsz]|[-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?', path_d
+    )
+    result: list[str] = []
+    coords: list[tuple[float, float]] = []
+    cx = cy = sx = sy = 0.0
+    cmd: str | None = None
+    i = 0
+
+    def to_cv(px: float, py: float) -> tuple[float, float]:
+        return px / 10 * scale, (kmeans_size - py / 10) * scale
+
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok in 'MLCSZmlcsz':
+            cmd = tok
+            i += 1
+            continue
+        # Collect all numbers until the next command
+        nums: list[float] = []
+        while i < len(tokens) and tokens[i] not in 'MLCSZmlcsz':
+            nums.append(float(tokens[i]))
+            i += 1
+        j = 0
+        while True:
+            if cmd == 'M':
+                if j + 1 >= len(nums): break
+                cx, cy = nums[j], nums[j + 1]; j += 2
+                sx, sy = cx, cy
+                nx, ny = to_cv(cx, cy); coords.append((nx, ny))
+                result.append(f"M{nx:.1f},{ny:.1f}"); cmd = 'L'
+            elif cmd == 'm':
+                if j + 1 >= len(nums): break
+                cx += nums[j]; cy += nums[j + 1]; j += 2
+                sx, sy = cx, cy
+                nx, ny = to_cv(cx, cy); coords.append((nx, ny))
+                result.append(f"M{nx:.1f},{ny:.1f}"); cmd = 'l'
+            elif cmd == 'L':
+                if j + 1 >= len(nums): break
+                cx, cy = nums[j], nums[j + 1]; j += 2
+                nx, ny = to_cv(cx, cy); coords.append((nx, ny))
+                result.append(f"L{nx:.1f},{ny:.1f}")
+            elif cmd == 'l':
+                if j + 1 >= len(nums): break
+                cx += nums[j]; cy += nums[j + 1]; j += 2
+                nx, ny = to_cv(cx, cy); coords.append((nx, ny))
+                result.append(f"L{nx:.1f},{ny:.1f}")
+            elif cmd == 'C':
+                if j + 5 >= len(nums): break
+                x1, y1 = nums[j], nums[j+1]; x2, y2 = nums[j+2], nums[j+3]
+                cx, cy = nums[j+4], nums[j+5]; j += 6
+                p1 = to_cv(x1, y1); p2 = to_cv(x2, y2); pe = to_cv(cx, cy)
+                coords.extend([p1, p2, pe])
+                result.append(f"C{p1[0]:.1f},{p1[1]:.1f} {p2[0]:.1f},{p2[1]:.1f} {pe[0]:.1f},{pe[1]:.1f}")
+            elif cmd == 'c':
+                if j + 5 >= len(nums): break
+                x1, y1 = cx + nums[j], cy + nums[j+1]
+                x2, y2 = cx + nums[j+2], cy + nums[j+3]
+                cx, cy = cx + nums[j+4], cy + nums[j+5]; j += 6
+                p1 = to_cv(x1, y1); p2 = to_cv(x2, y2); pe = to_cv(cx, cy)
+                coords.extend([p1, p2, pe])
+                result.append(f"C{p1[0]:.1f},{p1[1]:.1f} {p2[0]:.1f},{p2[1]:.1f} {pe[0]:.1f},{pe[1]:.1f}")
+            elif cmd in ('Z', 'z'):
+                cx, cy = sx, sy
+                result.append('Z')
+                break
+            else:
+                break
+    return ''.join(result), coords
+
+
+def _stroke_lines_potrace(
+    label_map_small: np.ndarray,
+    kmeans_size: int,
+    stroke_width: float,
+    min_fill_area: float,
+    log=print,
+) -> list[str]:
+    """
+    Per-color: run potrace on binary mask → smooth cubic Bézier outlines.
+    Filters paths touching canvas edge (avoids square-frame artifact).
+    Requires `potrace` CLI (brew install potrace on macOS).
+    """
+    if not _POTRACE or not os.path.exists(_POTRACE):
+        log("  [potrace] not found — install with: brew install potrace")
+        return []
+
+    n_colors = int(label_map_small.max()) + 1
+    scale = OUTPUT_CANVAS / kmeans_size
+    margin = OUTPUT_CANVAS * 0.015   # ~30px border exclusion zone
+    # min area in kmeans_size pixel² (same filter used for fill contours)
+    min_area_small = min_fill_area / (scale ** 2)
+
+    def process_color(idx: int) -> list[str]:
+        mask = ((label_map_small == idx) * 255).astype(np.uint8)
+        if mask.sum() == 0:
+            return []
+
+        # Remove connected components smaller than min_area_small (same filter as fill)
+        n_lbl, lbl_img, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        filtered = np.zeros_like(mask)
+        for lbl in range(1, n_lbl):
+            if stats[lbl, cv2.CC_STAT_AREA] >= min_area_small:
+                filtered[lbl_img == lbl] = 255
+        if filtered.sum() == 0:
+            return []
+        mask = filtered
+
+        # Fill internal holes so potrace only traces the outer boundary.
+        # Without this, potrace also traces hole-boundaries (eyes, mouth, etc.)
+        # which appear as black lines INSIDE the fill region.
+        inv = cv2.copyMakeBorder(255 - mask, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=255)
+        cv2.floodFill(inv, None, (0, 0), 128)   # 128 = background (reachable from outside)
+        inv = inv[1:-1, 1:-1]                   # crop padding back
+        mask = mask | ((inv == 255).astype(np.uint8) * 255)  # merge in holes
+
+        with tempfile.TemporaryDirectory() as d:
+            pbm = os.path.join(d, 'c.pbm')
+            svg = os.path.join(d, 'c.svg')
+            _save_pbm(pbm, mask)
+            r = subprocess.run(
+                [_POTRACE, '--svg', '-o', svg, pbm],
+                capture_output=True, timeout=30,
+            )
+            if r.returncode != 0:
+                return []
+            svg_txt = open(svg).read()
+
+        lines = []
+        for d_attr in re.findall(r'\sd="([^"]+)"', svg_txt):
+            transformed, cvcoords = _transform_potrace_path(d_attr, kmeans_size, scale)
+            if not cvcoords:
+                continue
+            xs = [c[0] for c in cvcoords]
+            ys = [c[1] for c in cvcoords]
+            # Skip paths that touch/cross the canvas boundary (square-frame artifact)
+            if (min(xs) < margin or min(ys) < margin or
+                    max(xs) > OUTPUT_CANVAS - margin or
+                    max(ys) > OUTPUT_CANVAS - margin):
+                continue
+            lines.append(f"{transformed}|0|{stroke_width}|0|0")
+        return lines
+
+    result: list[str] = []
+    with ThreadPoolExecutor(max_workers=min(4, n_colors)) as ex:
+        for color_lines in ex.map(process_color, range(n_colors)):
+            result.extend(color_lines)
+
+    log(f"  [potrace] → {len(result)} stroke paths")
+    return result
 
 
 # ── K-means ───────────────────────────────────────────────────────────────────
@@ -215,28 +397,28 @@ def process_array(
             cx, cy = centroid(c_s_scaled)
             fill_entries.append((area_real, f"{svg}|{hex_color}|0|{int(cy) * OUTPUT_CANVAS + int(cx)}|{FONT_SIZE}"))
 
-            # Stroke chỉ dùng outer path
-            if include_strokes:
-                outer_svg = contour_to_svg(c_s_scaled, closed=True)
-                stroke_lines.append(f"{outer_svg}|0|{stroke_width}|0|0")
-
     # Sort: lớn trước → nhỏ sau.
     fill_entries.sort(key=lambda e: e[0], reverse=True)
     fill_lines = [line for _, line in fill_entries]
 
-    # Preview overlay (vẽ stroke để user xem)
-    preview = quantized.copy()
+    # ── Bước 4: Strokes via potrace ──────────────────────────────────────
     if include_strokes:
-        h_diff = (label_map_small[:-1, :] != label_map_small[1:, :]).astype(np.uint8)
-        v_diff = (label_map_small[:, :-1] != label_map_small[:, 1:]).astype(np.uint8)
-        boundary_small = np.zeros((kmeans_size, kmeans_size), np.uint8)
-        boundary_small[:-1, :] = np.maximum(boundary_small[:-1, :], h_diff * 255)
-        boundary_small[:, :-1] = np.maximum(boundary_small[:, :-1], v_diff * 255)
-        if scale_factor != 1.0:
-            boundary_large = cv2.resize(boundary_small, (OUTPUT_CANVAS, OUTPUT_CANVAS), interpolation=cv2.INTER_NEAREST)
-            preview[boundary_large > 0] = (0, 0, 0)
-        else:
-            preview[boundary_small > 0] = (0, 0, 0)
+        log("[3/3] Generating smooth outlines via potrace…")
+        stroke_lines = _stroke_lines_potrace(
+            label_map_small, kmeans_size, stroke_width, min_fill_area, log
+        )
+    else:
+        log("[3/3] Skipping outlines.")
+
+    # Preview: quantized + boundary overlay
+    preview = quantized.copy()
+    h_diff = (label_map_small[:-1, :] != label_map_small[1:, :]).astype(np.uint8)
+    v_diff = (label_map_small[:, :-1] != label_map_small[:, 1:]).astype(np.uint8)
+    boundary_small = np.zeros((kmeans_size, kmeans_size), np.uint8)
+    boundary_small[:-1, :] = np.maximum(boundary_small[:-1, :], h_diff * 255)
+    boundary_small[:, :-1] = np.maximum(boundary_small[:, :-1], v_diff * 255)
+    boundary_large = cv2.resize(boundary_small, (OUTPUT_CANVAS, OUTPUT_CANVAS), interpolation=cv2.INTER_NEAREST)
+    preview[boundary_large > 0] = (0, 0, 0)
 
     palette = [(int(c[0]), int(c[1]), int(c[2])) for c in centers]
     all_lines = fill_lines + stroke_lines
