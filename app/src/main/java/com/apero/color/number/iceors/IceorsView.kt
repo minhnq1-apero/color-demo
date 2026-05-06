@@ -276,6 +276,56 @@ class IceorsView @JvmOverloads constructor(
         return true
     }
 
+    /** Mark every fillable region as painted. */
+    fun completeAll() {
+        val a = asset ?: return
+        var changed = false
+        for (region in a.fillables) {
+            if (!region.completed) {
+                region.completed = true
+                changed = true
+            }
+        }
+        if (changed) {
+            notifyProgress()
+            invalidate()
+        }
+    }
+
+    /**
+     * Render the asset to a bitmap at canvas resolution (default 2048×2048).
+     * Uses palette colors (or the reveal bitmap if set) for completed regions;
+     * uncompleted regions are left white. Decorations are drawn on top.
+     */
+    fun exportBitmap(): Bitmap? {
+        val a = asset ?: return null
+        val size = a.canvasSize.toInt().coerceAtLeast(1)
+        val bm = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bm)
+        c.drawColor(Color.WHITE)
+        val hasReveal = revealBitmap != null
+        for (region in a.fillables) {
+            if (!region.completed) continue
+            if (hasReveal) {
+                c.drawPath(region.path, revealPaint)
+            } else {
+                fillPaint.color = region.color
+                c.drawPath(region.path, fillPaint)
+            }
+        }
+        for (deco in a.decorations) {
+            when (deco.kind) {
+                IceorsRegion.Kind.STROKE_LINE -> {
+                    strokePaint.strokeWidth = deco.strokeWidth.coerceAtLeast(0.5f)
+                    c.drawPath(deco.path, strokePaint)
+                }
+                IceorsRegion.Kind.BLACK_FILL -> c.drawPath(deco.path, blackFillPaint)
+                IceorsRegion.Kind.FILLABLE -> Unit
+            }
+        }
+        return bm
+    }
+
     /** True when there's at least one un-completed region for the active palette. */
     fun hasHintCandidate(): Boolean {
         val a = asset ?: return false

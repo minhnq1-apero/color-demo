@@ -37,12 +37,16 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.apero.color.number.iceors.BitmapExporter
 import com.apero.color.number.iceors.IceorsAsset
 import com.apero.color.number.iceors.IceorsPalette
 import com.apero.color.number.iceors.IceorsView
 import com.apero.color.number.ui.theme.ColorByNumberTheme
+import android.widget.Toast
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import androidx.compose.runtime.rememberCoroutineScope
 
 class IceorsDrawActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -68,6 +72,7 @@ private fun IceorsScreen(padding: PaddingValues) {
     var paletteProgress by remember { mutableStateOf<Map<Int, IntArray>>(emptyMap()) }
     var view by remember { mutableStateOf<IceorsView?>(null) }
     var hintsUsed by remember { mutableIntStateOf(0) }
+    val scope = rememberCoroutineScope()
 
     LaunchedEffect(Unit) {
         val l = withContext(Dispatchers.Default) {
@@ -103,22 +108,67 @@ private fun IceorsScreen(padding: PaddingValues) {
                     },
                     update = { v -> v.selectPaletteIndex(activeIndex) },
                 )
-                Box(
+                Column(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
-                        .padding(12.dp)
-                        .clip(RoundedCornerShape(50))
-                        .background(Color(0xFFFFC107))
-                        .clickable {
-                            if (view?.requestHint() == true) hintsUsed++
-                        }
-                        .padding(horizontal = 14.dp, vertical = 8.dp),
-                    contentAlignment = Alignment.Center,
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Text(
-                        text = "💡 Hint" + if (hintsUsed > 0) " ($hintsUsed)" else "",
-                        color = Color.Black,
-                    )
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .background(Color(0xFFFFC107))
+                            .clickable {
+                                if (view?.requestHint() == true) hintsUsed++
+                            }
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = "💡 Hint" + if (hintsUsed > 0) " ($hintsUsed)" else "",
+                            color = Color.Black,
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .background(Color(0xFF4CAF50))
+                            .clickable { view?.completeAll() }
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(text = "🎨 Fill all", color = Color.White)
+                    }
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .background(Color(0xFF2196F3))
+                            .clickable {
+                                val v = view ?: return@clickable
+                                scope.launch {
+                                    val bm = withContext(Dispatchers.Default) { v.exportBitmap() }
+                                    if (bm == null) {
+                                        Toast.makeText(context, "Export failed (asset not loaded)",
+                                            Toast.LENGTH_SHORT).show()
+                                        return@launch
+                                    }
+                                    val name = "iceors_${System.currentTimeMillis()}.png"
+                                    val path = withContext(Dispatchers.IO) {
+                                        BitmapExporter.save(context, bm, name)
+                                    }
+                                    Toast.makeText(
+                                        context,
+                                        if (path != null) "Saved → Pictures/ColorByNumber/$name"
+                                        else "Save failed",
+                                        Toast.LENGTH_LONG,
+                                    ).show()
+                                }
+                            }
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(text = "💾 Export", color = Color.White)
+                    }
                 }
             }
         }
