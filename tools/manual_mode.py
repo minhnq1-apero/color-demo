@@ -9,6 +9,7 @@ Drawing tool:
 
 from __future__ import annotations
 
+import base64
 import io
 import zipfile
 
@@ -16,7 +17,35 @@ import cv2
 import numpy as np
 import streamlit as st
 from PIL import Image
-from streamlit_drawable_canvas import st_canvas
+
+# ── Compat shim ───────────────────────────────────────────────────────────────
+# streamlit-drawable-canvas 0.9.3 uses streamlit.elements.image.image_to_url,
+# removed in Streamlit ≥1.30. Re-add a working replacement before importing it.
+import streamlit.elements.image as _st_image  # noqa: E402
+
+if not hasattr(_st_image, "image_to_url"):
+    def _image_to_url(image, width=-1, clamp=False, channels="RGB",
+                      output_format="auto", image_id="", allow_emoji=False):
+        if isinstance(image, bytes):
+            data, mime = image, "image/png"
+        elif isinstance(image, np.ndarray):
+            buf = io.BytesIO()
+            Image.fromarray(image).save(buf, format="PNG")
+            data, mime = buf.getvalue(), "image/png"
+        elif hasattr(image, "save"):
+            buf = io.BytesIO()
+            fmt = (output_format or "PNG").upper()
+            if fmt == "AUTO":
+                fmt = "PNG"
+            image.save(buf, format=fmt)
+            data, mime = buf.getvalue(), f"image/{fmt.lower()}"
+        else:
+            raise ValueError(f"Unsupported image type: {type(image)}")
+        return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+
+    _st_image.image_to_url = _image_to_url
+
+from streamlit_drawable_canvas import st_canvas  # noqa: E402
 
 from image_to_colorbynumber import OUTPUT_CANVAS, FONT_SIZE, rgb_to_hex
 
