@@ -97,7 +97,7 @@ from image_to_colorbynumber import OUTPUT_CANVAS, FONT_SIZE, rgb_to_hex
 
 LINE_SEP = "\r\n"
 SP_FLAG = b"111\r\n"
-DISPLAY_SIZE = 800
+DISPLAY_SIZE = 600
 
 
 def _to_jpeg(img_rgb: np.ndarray, quality: int = 92) -> bytes:
@@ -235,6 +235,11 @@ def render_manual_mode() -> None:
 
     # ── Canvas ──────────────────────────────────────────────────────────────
     st.subheader("Canvas")
+
+    # Debug: confirm the image is loading via Streamlit's normal rendering path
+    with st.expander("🔍 Debug: ảnh đã load (xem có hiện ko)", expanded=False):
+        st.image(pil_display, caption=f"Image size: {pil_display.size}", width=300)
+
     if st.button("Clear all shapes", key="clear_btn"):
         st.session_state["canvas_key"] = st.session_state.get("canvas_key", 0) + 1
     canvas_key = f"canvas_{st.session_state.get('canvas_key', 0)}"
