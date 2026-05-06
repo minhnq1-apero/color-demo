@@ -345,16 +345,9 @@ def process_array(
         r, g, b = int(color[0]), int(color[1]), int(color[2])
         hex_color = rgb_to_hex(r, g, b)
 
-        # Tạo mask trên ảnh gốc nhỏ
+        # Mask trực tiếp từ label_map — K-means đảm bảo mọi pixel thuộc đúng 1 cluster
+        # → không có gap giữa các vùng → KHÔNG dùng blur/dilate (chúng tạo ra gap)
         mask = ((label_map_small == idx).astype(np.uint8) * 255)
-
-        # 1. GaussianBlur: bo tròn biên pixel (loại bỏ răng cưa gốc)
-        mask = cv2.GaussianBlur(mask, (5, 5), 1.5)
-        _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
-
-        # 2. Dilate 1px: mở rộng vùng để lấp khe trắng giữa các fill
-        kernel = np.ones((3, 3), np.uint8)
-        mask = cv2.dilate(mask, kernel, iterations=1)
 
         # RETR_CCOMP: 2 cấp hierarchy
         contours, hierarchy = cv2.findContours(mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_TC89_KCOS)
