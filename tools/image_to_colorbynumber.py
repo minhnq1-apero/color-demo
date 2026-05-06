@@ -346,8 +346,13 @@ def process_array(
         hex_color = rgb_to_hex(r, g, b)
 
         # Mask trực tiếp từ label_map — K-means đảm bảo mọi pixel thuộc đúng 1 cluster
-        # → không có gap giữa các vùng → KHÔNG dùng blur/dilate (chúng tạo ra gap)
         mask = ((label_map_small == idx).astype(np.uint8) * 255)
+
+        # Dilate 1px: fill mở rộng ra ~0.5-1px ngoài boundary thật.
+        # Catmull-Rom Bézier có xu hướng co contour vào trong → khe trắng
+        # giữa fill và stroke. Dilate cho fill phủ qua boundary, stroke (vẽ
+        # trên cùng) sẽ che phần overlap → không còn khe trắng.
+        mask = cv2.dilate(mask, np.ones((3, 3), np.uint8), iterations=1)
 
         # RETR_CCOMP: 2 cấp hierarchy
         contours, hierarchy = cv2.findContours(mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_TC89_KCOS)
