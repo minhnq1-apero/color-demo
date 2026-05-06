@@ -4,3 +4,4 @@ numpy>=1.24
 streamlit>=1.35
 pillow>=10.0
 boto3>=1.34
+streamlit-drawable-canvas>=0.9

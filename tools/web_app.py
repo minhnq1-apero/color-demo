@@ -29,6 +29,19 @@ st.caption(
     "match Android `IceorsAsset canvasSize` mặc định."
 )
 
+# ── Mode selector ─────────────────────────────────────────────────────────────
+mode = st.sidebar.radio(
+    "Mode", ["Auto (K-means)", "Manual (vẽ tay)"],
+    index=0, key="app_mode",
+    help="Auto: tự động chia màu bằng K-means. Manual: vẽ tay từng vùng, màu auto-detect.",
+)
+st.sidebar.markdown("---")
+
+if mode.startswith("Manual"):
+    from manual_mode import render_manual_mode
+    render_manual_mode()
+    st.stop()
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("Settings")
