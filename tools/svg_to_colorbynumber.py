@@ -31,6 +31,12 @@ from svgelements import (
     Move, Line as PathLine, CubicBezier, QuadraticBezier, Arc, Close,
 )
 
+try:
+    from pathops import Path as SkPath, op as sk_op, PathOp
+    _HAS_PATHOPS = True
+except ImportError:
+    _HAS_PATHOPS = False
+
 OUTPUT_CANVAS = 2048
 FONT_SIZE = 12
 
@@ -81,6 +87,57 @@ def _path_to_d(path: SvgPath) -> str:
     return "".join(parts)
 
 
+def _svgpath_to_skia(svg_path: SvgPath):
+    """Convert reified svgelements Path → skia-pathops Path."""
+    sk = SkPath()
+    for seg in svg_path:
+        if isinstance(seg, Move):
+            sk.moveTo(seg.end.x, seg.end.y)
+        elif isinstance(seg, PathLine):
+            sk.lineTo(seg.end.x, seg.end.y)
+        elif isinstance(seg, CubicBezier):
+            sk.cubicTo(
+                seg.control1.x, seg.control1.y,
+                seg.control2.x, seg.control2.y,
+                seg.end.x, seg.end.y,
+            )
+        elif isinstance(seg, QuadraticBezier):
+            sk.quadTo(seg.control.x, seg.control.y, seg.end.x, seg.end.y)
+        elif isinstance(seg, Arc):
+            for cubic in seg.as_cubic_curves():
+                sk.cubicTo(
+                    cubic.control1.x, cubic.control1.y,
+                    cubic.control2.x, cubic.control2.y,
+                    cubic.end.x, cubic.end.y,
+                )
+        elif isinstance(seg, Close):
+            sk.close()
+    return sk
+
+
+def _skia_to_d(sk) -> str:
+    """Skia path → SVG d string (only commands Android PathParser supports)."""
+    parts: list[str] = []
+    for verb, pts in sk.segments:
+        if verb == "moveTo":
+            x, y = pts[0]
+            parts.append(f"M{x:.2f},{y:.2f}")
+        elif verb == "lineTo":
+            x, y = pts[0]
+            parts.append(f"L{x:.2f},{y:.2f}")
+        elif verb == "curveTo":
+            (cx1, cy1), (cx2, cy2), (ex, ey) = pts
+            parts.append(f"C{cx1:.2f},{cy1:.2f} {cx2:.2f},{cy2:.2f} {ex:.2f},{ey:.2f}")
+        elif verb == "qCurveTo":
+            # Single quadratic (cp, end). For multi-cp TrueType-style we'd need to expand.
+            if len(pts) == 2:
+                (cx, cy), (ex, ey) = pts
+                parts.append(f"Q{cx:.2f},{cy:.2f} {ex:.2f},{ey:.2f}")
+        elif verb == "closePath":
+            parts.append("Z")
+    return "".join(parts)
+
+
 def _path_centroid(path: SvgPath) -> tuple[float, float]:
     """Bounding-box center — good enough for label placement."""
     bb = path.bbox()
@@ -109,6 +166,7 @@ def _color_to_rgb(c) -> Optional[tuple[int, int, int]]:
 def svg_to_lines(
     svg_input,
     output_canvas: int = OUTPUT_CANVAS,
+    subtract_overlaps: bool = True,
     log=print,
 ) -> tuple[list[str], tuple[int, int, int, int]]:
     """
@@ -142,7 +200,8 @@ def svg_to_lines(
     # Affine matrix: viewBox space → OUTPUT_CANVAS pixel space
     bake = Matrix(f"scale({scale}) translate({offset_x}, {offset_y})")
 
-    fill_lines: list[tuple[float, str]] = []   # (area, line) for area-sort
+    # First pass: collect all parsed shapes
+    fill_records: list[dict] = []   # {sk, area, color_hex, label_pos}
     stroke_lines: list[str] = []
 
     n_total = 0
@@ -150,8 +209,6 @@ def svg_to_lines(
     for elem in svg.elements():
         if not isinstance(elem, Shape):
             continue
-        # Convert any shape (Rect, Circle, Polygon, …) to a Path with all
-        # parent transforms already applied.
         try:
             path = SvgPath(elem)
         except Exception:
@@ -160,8 +217,6 @@ def svg_to_lines(
         if len(path) == 0:
             continue
 
-        # Apply viewBox→canvas transform — multiply attaches matrix, reify
-        # bakes it into the segment coordinates.
         path = path * bake
         path.reify()
 
@@ -173,30 +228,64 @@ def svg_to_lines(
         fill_rgb = _color_to_rgb(getattr(elem, "fill", None))
         stroke_rgb = _color_to_rgb(getattr(elem, "stroke", None))
         sw_raw = float(getattr(elem, "stroke_width", 0) or 0)
-        # stroke-width is in source space; scale to canvas space.
         stroke_w = sw_raw * scale
         n_total += 1
 
-        # FILL entry — only if fill is set and not 'none'
         if fill_rgb is not None:
             hex_c = rgb_to_hex(*fill_rgb)
             cx, cy = _path_centroid(path)
             label_pos = int(cy) * output_canvas + int(cx)
             try:
-                area = abs(path.bbox()[2] - path.bbox()[0]) * abs(path.bbox()[3] - path.bbox()[1])
+                bb = path.bbox()
+                area = abs(bb[2] - bb[0]) * abs(bb[3] - bb[1])
             except Exception:
                 area = 0.0
-            fill_lines.append((area, f"{d}|{hex_c}|0|{label_pos}|{FONT_SIZE}"))
+            fill_records.append({
+                "svg_path": path,           # for skia conversion later
+                "d_orig": d,
+                "area": area,
+                "color_hex": hex_c,
+                "label_pos": label_pos,
+            })
 
-        # STROKE entry — only if stroke is set with non-zero width
         if stroke_rgb is not None and stroke_w > 0:
-            # Android's IceorsView renders all STROKE_LINE in black anyway,
-            # so the stored color isn't important — keep "0" sentinel.
             stroke_lines.append(f"{d}|0|{stroke_w:.2f}|0|0")
 
-    # Sort fills largest-first so smaller details overpaint backgrounds.
-    fill_lines.sort(key=lambda t: t[0], reverse=True)
-    fill_only = [line for _, line in fill_lines]
+    # Sort fills largest-first → fills[0] is bottom layer, fills[-1] is on top
+    fill_records.sort(key=lambda r: r["area"], reverse=True)
+
+    # ── Path subtraction: each fill loses pixels covered by anything above it
+    # so painted regions never visually overlap.
+    fill_only: list[str] = []
+    if subtract_overlaps and _HAS_PATHOPS and len(fill_records) > 1:
+        log(f"[svg→cbn] subtracting overlaps from {len(fill_records)} fills…")
+        # Build skia paths once
+        sk_paths = [_svgpath_to_skia(r["svg_path"]) for r in fill_records]
+
+        # Top-to-bottom: for each fill, subtract union of all fills above it.
+        above_union: SkPath | None = None
+        # We process in REVERSE (top first), so we can accumulate above_union.
+        new_d_list: list[str | None] = [None] * len(fill_records)
+        for i in range(len(fill_records) - 1, -1, -1):
+            current = sk_paths[i]
+            if above_union is not None:
+                current = sk_op(current, above_union, PathOp.DIFFERENCE)
+            new_d_list[i] = _skia_to_d(current)
+            above_union = current if above_union is None else sk_op(above_union, current, PathOp.UNION)
+
+        for r, new_d in zip(fill_records, new_d_list):
+            if not new_d:    # entire region was covered → skip
+                continue
+            fill_only.append(
+                f"{new_d}|{r['color_hex']}|0|{r['label_pos']}|{FONT_SIZE}"
+            )
+    else:
+        if subtract_overlaps and not _HAS_PATHOPS:
+            log("[svg→cbn] skia-pathops missing → skipping overlap subtraction")
+        for r in fill_records:
+            fill_only.append(
+                f"{r['d_orig']}|{r['color_hex']}|0|{r['label_pos']}|{FONT_SIZE}"
+            )
 
     log(f"[svg→cbn] {n_total} shapes parsed, {n_skipped} skipped")
     log(f"  → {len(fill_only)} fill, {len(stroke_lines)} stroke | canvas {output_canvas}px")
@@ -212,10 +301,15 @@ def main() -> None:
     ap.add_argument("input", help="Input SVG file")
     ap.add_argument("output", help="Output Iceors data file (`{key}b`)")
     ap.add_argument("--canvas", type=int, default=OUTPUT_CANVAS)
+    ap.add_argument("--no-subtract", action="store_true",
+                    help="Disable overlap subtraction (keep raw paths)")
     args = ap.parse_args()
 
     try:
-        lines, _ = svg_to_lines(args.input, output_canvas=args.canvas)
+        lines, _ = svg_to_lines(
+            args.input, output_canvas=args.canvas,
+            subtract_overlaps=not args.no_subtract,
+        )
     except (FileNotFoundError, ValueError) as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
