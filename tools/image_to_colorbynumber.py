@@ -348,6 +348,17 @@ def process_array(
         # Mask trực tiếp từ label_map — K-means đảm bảo mọi pixel thuộc đúng 1 cluster
         mask = ((label_map_small == idx).astype(np.uint8) * 255)
 
+        # Bỏ noise: filter connected components < min_fill_area TRƯỚC khi dilate.
+        # Nếu để dilate trước, các đốm 4-5 pixel sẽ phình lên đủ qua filter → spam.
+        n_lbl, lbl_img, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        clean = np.zeros_like(mask)
+        for lbl in range(1, n_lbl):
+            if stats[lbl, cv2.CC_STAT_AREA] >= min_fill_area_small:
+                clean[lbl_img == lbl] = 255
+        if clean.sum() == 0:
+            continue
+        mask = clean
+
         # Dilate 1px: fill mở rộng ra ~0.5-1px ngoài boundary thật.
         # Catmull-Rom Bézier có xu hướng co contour vào trong → khe trắng
         # giữa fill và stroke. Dilate cho fill phủ qua boundary, stroke (vẽ

@@ -61,7 +61,7 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("**Regions**")
-    min_area = st.number_input("Min fill area (px²)", 0, 2000, 100, 10,
+    min_area = st.number_input("Min fill area (px²)", 0, 2000, 300, 50,
         help="Vùng nhỏ hơn số này bị bỏ qua. Tăng lên nếu quá nhiều fill regions.")
 
     generate = st.button("Convert", type="primary", use_container_width=True)
@@ -200,6 +200,15 @@ else:
 # Nền trong suốt → trắng
 white_bg = Image.new("RGBA", pil_img.size, (255, 255, 255, 255))
 pil_img = Image.alpha_composite(white_bg, pil_img).convert("RGB")
+
+# Pad thành hình vuông (center, nền trắng) — canvas luôn là 1:1
+w, h = pil_img.size
+if w != h:
+    side = max(w, h)
+    square = Image.new("RGB", (side, side), (255, 255, 255))
+    square.paste(pil_img, ((side - w) // 2, (side - h) // 2))
+    pil_img = square
+
 img_rgb = np.array(pil_img)
 
 col_orig, col_preview = st.columns(2)
