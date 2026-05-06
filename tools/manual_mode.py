@@ -9,6 +9,7 @@ Drawing tool:
 
 from __future__ import annotations
 
+import base64
 import io
 import zipfile
 
@@ -18,19 +19,26 @@ import streamlit as st
 from PIL import Image
 
 # ── Compat shim ───────────────────────────────────────────────────────────────
-# streamlit-drawable-canvas 0.9.3 uses streamlit.elements.image.image_to_url,
-# removed in Streamlit ≥1.30. Re-add a working replacement before importing it.
+# streamlit-drawable-canvas 0.9.3 calls streamlit.elements.image.image_to_url,
+# removed in Streamlit ≥1.30. Returning a data URL is the most reliable fallback
+# (avoids MediaFileManager session/coordinate edge cases that produce empty
+# canvas backgrounds).
 import streamlit.elements.image as _st_image  # noqa: E402
 
 if not hasattr(_st_image, "image_to_url"):
-    # Delegate to the real function in its new location.
-    from streamlit.elements.lib.image_utils import image_to_url as _new_image_to_url
-    from streamlit.elements.lib.layout_utils import LayoutConfig
-
     def _image_to_url(image, width=-1, clamp=False, channels="RGB",
                       output_format="auto", image_id="", allow_emoji=False):
-        layout = LayoutConfig(width=width if isinstance(width, int) and width > 0 else None)
-        return _new_image_to_url(image, layout, clamp, channels, output_format, image_id)
+        # Encode as JPEG (small) data URL — self-contained, no URL routing needed
+        if isinstance(image, np.ndarray):
+            image = Image.fromarray(image)
+        if not hasattr(image, "save"):
+            raise ValueError(f"Unsupported image type: {type(image)}")
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+        buf = io.BytesIO()
+        image.save(buf, format="JPEG", quality=85)
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        return f"data:image/jpeg;base64,{b64}"
 
     _st_image.image_to_url = _image_to_url
 
