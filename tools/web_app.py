@@ -192,27 +192,23 @@ def make_zip(with_image: bool, ref_jpeg: bytes | None = None) -> bytes:
 # Nguyên tắc: ảnh nào (SVG render hay user upload) cũng được fit-into-aspect-of-SVG
 # rồi center-pad → khớp với pad của paths.
 def _to_square_jpeg(pil_img, sw: float, sh: float) -> bytes:
-    """Fit `pil_img` vào aspect (sw:sh), rồi center-pad trắng thành OUTPUT_CANVAS²."""
+    """
+    Stretch `pil_img` về đúng kích thước khung SVG paths trong canvas
+    (target_w × target_h), rồi center-pad trắng thành OUTPUT_CANVAS².
+    Không letterbox — pixel image phủ kín đúng vùng paths cover.
+    """
     from PIL import Image as _PILImage
     side = max(sw, sh) or 1
     scale = OUTPUT_CANVAS / side
     target_w = max(1, int(round(sw * scale)))
     target_h = max(1, int(round(sh * scale)))
 
-    # Fit pil_img INTO target_w×target_h preserving its own aspect (letterbox if cần)
-    iw, ih = pil_img.size
-    ratio = min(target_w / iw, target_h / ih)
-    new_w = max(1, int(round(iw * ratio)))
-    new_h = max(1, int(round(ih * ratio)))
-    fit = pil_img.resize((new_w, new_h), _PILImage.LANCZOS)
+    # Stretch về đúng SVG aspect — không giữ aspect ratio gốc của image
+    fit = pil_img.resize((target_w, target_h), _PILImage.LANCZOS)
 
-    # Inner letterbox: trắng nền target_w×target_h, paste fit ở giữa
-    inner = _PILImage.new("RGB", (target_w, target_h), (255, 255, 255))
-    inner.paste(fit, ((target_w - new_w) // 2, (target_h - new_h) // 2))
-
-    # Outer pad: trắng nền OUTPUT_CANVAS², paste inner ở giữa
+    # Center-pad lên OUTPUT_CANVAS² (chỉ pad nếu SVG aspect không vuông)
     square = _PILImage.new("RGB", (OUTPUT_CANVAS, OUTPUT_CANVAS), (255, 255, 255))
-    square.paste(inner, ((OUTPUT_CANVAS - target_w) // 2, (OUTPUT_CANVAS - target_h) // 2))
+    square.paste(fit, ((OUTPUT_CANVAS - target_w) // 2, (OUTPUT_CANVAS - target_h) // 2))
 
     buf = io.BytesIO()
     square.save(buf, format="JPEG", quality=92)
