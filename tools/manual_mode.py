@@ -20,29 +20,78 @@ from PIL import Image
 
 # ── Compat shim ───────────────────────────────────────────────────────────────
 # streamlit-drawable-canvas 0.9.3 calls streamlit.elements.image.image_to_url,
-# removed in Streamlit ≥1.30. Returning a data URL is the most reliable fallback
-# (avoids MediaFileManager session/coordinate edge cases that produce empty
-# canvas backgrounds).
+# removed in Streamlit ≥1.30. The Streamlit-owned MediaFileManager URL approach
+# silently produces empty canvas backgrounds in this version combo, so we
+# replace st_canvas with a wrapper that uses a self-contained base64 data URL.
 import streamlit.elements.image as _st_image  # noqa: E402
 
 if not hasattr(_st_image, "image_to_url"):
-    def _image_to_url(image, width=-1, clamp=False, channels="RGB",
-                      output_format="auto", image_id="", allow_emoji=False):
-        # Encode as JPEG (small) data URL — self-contained, no URL routing needed
-        if isinstance(image, np.ndarray):
-            image = Image.fromarray(image)
-        if not hasattr(image, "save"):
-            raise ValueError(f"Unsupported image type: {type(image)}")
-        if image.mode != "RGB":
-            image = image.convert("RGB")
-        buf = io.BytesIO()
-        image.save(buf, format="JPEG", quality=85)
-        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-        return f"data:image/jpeg;base64,{b64}"
+    # Stub so streamlit-drawable-canvas can import without AttributeError.
+    _st_image.image_to_url = lambda *a, **kw: ""
 
-    _st_image.image_to_url = _image_to_url
+import streamlit_drawable_canvas as _sdc  # noqa: E402
+from streamlit_drawable_canvas import CanvasResult  # noqa: E402
 
-from streamlit_drawable_canvas import st_canvas  # noqa: E402
+
+def _bg_image_to_data_url(img: Image.Image) -> str:
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=85)
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def st_canvas(
+    fill_color: str = "#eee",
+    stroke_width: int = 20,
+    stroke_color: str = "black",
+    background_color: str = "",
+    background_image: Image.Image | None = None,
+    update_streamlit: bool = True,
+    height: int = 400,
+    width: int = 600,
+    drawing_mode: str = "freedraw",
+    initial_drawing: dict | None = None,
+    display_toolbar: bool = True,
+    point_display_radius: int = 3,
+    key=None,
+):
+    """
+    Replacement for streamlit_drawable_canvas.st_canvas that doesn't rely on
+    the removed Streamlit `image_to_url` helper. Bypasses the file manager
+    and embeds the resized background as a base64 JPEG data URL.
+    """
+    background_image_url = None
+    if background_image is not None:
+        bg = _sdc._resize_img(background_image, height, width)
+        background_image_url = _bg_image_to_data_url(bg)
+        background_color = ""
+
+    initial_drawing = ({"version": "4.4.0"} if initial_drawing is None else initial_drawing)
+    initial_drawing["background"] = background_color
+
+    component_value = _sdc._component_func(
+        fillColor=fill_color,
+        strokeWidth=stroke_width,
+        strokeColor=stroke_color,
+        backgroundColor=background_color,
+        backgroundImageURL=background_image_url,
+        realtimeUpdateStreamlit=update_streamlit and (drawing_mode != "polygon"),
+        canvasHeight=height,
+        canvasWidth=width,
+        drawingMode=drawing_mode,
+        initialDrawing=initial_drawing,
+        displayToolbar=display_toolbar,
+        displayRadius=point_display_radius,
+        key=key,
+        default=None,
+    )
+    if component_value is None:
+        return CanvasResult
+    return CanvasResult(
+        np.asarray(_sdc._data_url_to_image(component_value["data"])),
+        component_value["raw"],
+    )
 
 from image_to_colorbynumber import OUTPUT_CANVAS, FONT_SIZE, rgb_to_hex
 
