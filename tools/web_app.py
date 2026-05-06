@@ -265,6 +265,38 @@ except Exception as exc:
     except Exception:
         ref_jpeg = None
 
+# Debug expander — hiển thị reference JPEG sẽ ghi vào {key}c
+with st.expander(f"🔍 Debug: reference JPEG ({key}c trong ZIP)", expanded=False):
+    if ref_jpeg:
+        st.caption(
+            f"Ảnh nhúng vào ZIP làm reveal layer (size {len(ref_jpeg):,} bytes). "
+            "Pixel (cx, cy) ở đây phải khớp pixel paths phủ — nếu vùng image "
+            "trắng ở đâu, paths ở đó sẽ thấy trắng khi tô."
+        )
+        # Overlay paths (đỏ semi-transparent) lên image để verify alignment
+        overlay_svg = (
+            f'<div style="position:relative;width:100%;max-width:600px">'
+            f'<img src="data:image/jpeg;base64,'
+            + __import__("base64").b64encode(ref_jpeg).decode()
+            + f'" style="width:100%;display:block"/>'
+            f'<svg xmlns="http://www.w3.org/2000/svg" '
+            f'viewBox="0 0 {OUTPUT_CANVAS} {OUTPUT_CANVAS}" '
+            f'style="position:absolute;top:0;left:0;width:100%;height:100%;'
+            f'opacity:0.5">'
+        )
+        for line in lines[:200]:   # cap để render nhẹ
+            cols = line.split("|")
+            if len(cols) < 3 or cols[2].strip() != "0":
+                continue
+            overlay_svg += f'<path d="{cols[0]}" fill="red" fill-opacity="0.3" stroke="red" stroke-width="1"/>'
+        overlay_svg += "</svg></div>"
+        st.markdown("**Reference image alone:**")
+        st.image(ref_jpeg, use_container_width=True)
+        st.markdown("**Image + paths overlay (red = path coverage):**")
+        st.markdown(overlay_svg, unsafe_allow_html=True)
+    else:
+        st.warning("ref_jpeg = None — kiểm tra log")
+
 # ── Download ──────────────────────────────────────────────────────────────────
 st.subheader("Download")
 dl1, dl2 = st.columns(2)
