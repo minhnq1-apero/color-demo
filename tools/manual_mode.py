@@ -26,6 +26,7 @@ import streamlit.elements.image as _st_image  # noqa: E402
 if not hasattr(_st_image, "image_to_url"):
     def _image_to_url(image, width=-1, clamp=False, channels="RGB",
                       output_format="auto", image_id="", allow_emoji=False):
+        # Encode image to PNG bytes
         if isinstance(image, bytes):
             data, mime = image, "image/png"
         elif isinstance(image, np.ndarray):
@@ -41,7 +42,17 @@ if not hasattr(_st_image, "image_to_url"):
             data, mime = buf.getvalue(), f"image/{fmt.lower()}"
         else:
             raise ValueError(f"Unsupported image type: {type(image)}")
-        return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+
+        # Register with Streamlit's MediaFileManager → returns /media/<hash>.png URL
+        # (data URLs are too long and can break the canvas component)
+        try:
+            from streamlit.runtime import Runtime
+            runtime = Runtime.instance()
+            return runtime.media_file_mgr.add(
+                data, mime, image_id or f"img_{id(image)}",
+            )
+        except Exception:
+            return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
 
     _st_image.image_to_url = _image_to_url
 
