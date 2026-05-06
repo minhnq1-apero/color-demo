@@ -55,6 +55,25 @@ with st.sidebar:
         help="Tên file bên trong ZIP: {key}b. Không dùng dấu cách.",
     )
 
+    st.markdown("---")
+    st.markdown("**Outlines**")
+    add_outline = st.toggle(
+        "Tự động thêm nét đen quanh mỗi vùng fill", value=True,
+        help="Mỗi fill region sẽ kèm 1 STROKE_LINE đen viền theo nó. "
+             "Giúp nhìn rõ các vùng trong app khi chưa tô.",
+    )
+    outline_width = st.slider(
+        "Outline width (px on 2048 canvas)", 0.5, 5.0, 1.5, 0.5,
+        disabled=not add_outline,
+    )
+
+    st.markdown("---")
+    subtract = st.toggle(
+        "Subtract overlaps", value=True,
+        help="Mỗi vùng chỉ phủ pixels unique của nó (không overlap vùng khác). "
+             "Bật cho output cleaner.",
+    )
+
 if uploaded is None:
     st.info("Upload file SVG ở sidebar để bắt đầu.")
     st.markdown(
@@ -74,7 +93,12 @@ log: list[str] = []
 svg_bytes = uploaded.read()
 
 try:
-    lines, _ = svg_to_lines(io.BytesIO(svg_bytes), log=log.append)
+    lines, _ = svg_to_lines(
+        io.BytesIO(svg_bytes),
+        subtract_overlaps=subtract,
+        auto_outline_width=outline_width if add_outline else 0.0,
+        log=log.append,
+    )
 except Exception as e:
     st.error(f"Parse failed: {e}")
     st.stop()

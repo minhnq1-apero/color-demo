@@ -167,6 +167,7 @@ def svg_to_lines(
     svg_input,
     output_canvas: int = OUTPUT_CANVAS,
     subtract_overlaps: bool = True,
+    auto_outline_width: float = 0.0,
     log=print,
 ) -> tuple[list[str], tuple[int, int, int, int]]:
     """
@@ -279,6 +280,8 @@ def svg_to_lines(
             fill_only.append(
                 f"{new_d}|{r['color_hex']}|0|{r['label_pos']}|{FONT_SIZE}"
             )
+            if auto_outline_width > 0:
+                stroke_lines.append(f"{new_d}|0|{auto_outline_width:.2f}|0|0")
     else:
         if subtract_overlaps and not _HAS_PATHOPS:
             log("[svg→cbn] skia-pathops missing → skipping overlap subtraction")
@@ -286,6 +289,8 @@ def svg_to_lines(
             fill_only.append(
                 f"{r['d_orig']}|{r['color_hex']}|0|{r['label_pos']}|{FONT_SIZE}"
             )
+            if auto_outline_width > 0:
+                stroke_lines.append(f"{r['d_orig']}|0|{auto_outline_width:.2f}|0|0")
 
     log(f"[svg→cbn] {n_total} shapes parsed, {n_skipped} skipped")
     log(f"  → {len(fill_only)} fill, {len(stroke_lines)} stroke | canvas {output_canvas}px")
@@ -303,12 +308,16 @@ def main() -> None:
     ap.add_argument("--canvas", type=int, default=OUTPUT_CANVAS)
     ap.add_argument("--no-subtract", action="store_true",
                     help="Disable overlap subtraction (keep raw paths)")
+    ap.add_argument("--outline", type=float, default=0.0,
+                    help="Auto-add black stroke of given px width to every fill path "
+                         "(0 = off)")
     args = ap.parse_args()
 
     try:
         lines, _ = svg_to_lines(
             args.input, output_canvas=args.canvas,
             subtract_overlaps=not args.no_subtract,
+            auto_outline_width=args.outline,
         )
     except (FileNotFoundError, ValueError) as e:
         print(f"Error: {e}", file=sys.stderr)
