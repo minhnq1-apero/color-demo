@@ -47,6 +47,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.compose.runtime.rememberCoroutineScope
+import android.content.Intent
+import android.app.Activity
+import com.apero.color.number.coloring.ResultHolder
+import kotlinx.coroutines.delay
 
 class IceorsDrawActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -81,6 +85,20 @@ private fun IceorsScreen(padding: PaddingValues) {
         loaded = l
         total = l.regions.size
         activeIndex = l.palette.firstOrNull()?.index ?: -1
+    }
+
+    LaunchedEffect(done, total) {
+        if (total > 0 && done >= total) {
+            delay(800)
+
+            ResultHolder.iceorsAsset = loaded
+            ResultHolder.revealBitmap = null
+            ResultHolder.isOil = false
+            context.startActivity(Intent(context, IceorsResultActivity::class.java))
+            // We finish DrawActivity so the user "progresses" to result.
+            // They can go back to gallery from the result screen.
+            (context as? Activity)?.finish()
+        }
     }
 
     Column(

@@ -41,6 +41,11 @@
             android:hardwareAccelerated="true"
             android:theme="@style/Theme.ColorByNumber" />
         <activity
+            android:name=".IceorsResultActivity"
+            android:exported="false"
+            android:hardwareAccelerated="true"
+            android:theme="@style/Theme.ColorByNumber" />
+        <activity
             android:name=".CdnGalleryActivity"
             android:exported="false"
             android:theme="@style/Theme.ColorByNumber" />

@@ -151,8 +151,12 @@ class IceorsView @JvmOverloads constructor(
     /** Fires after every fill (and on initial load) with `paletteIndex → done/total` per bucket. */
     var onPaletteProgressChanged: ((Map<Int, IntArray>) -> Unit)? = null
 
+    /** If false, touch events (pan/zoom/tap) are ignored. Used during replay. */
+    var isInteractionEnabled: Boolean = true
+
     private val scaleListener = object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
         override fun onScale(detector: ScaleGestureDetector): Boolean {
+            if (!isInteractionEnabled) return false
             val current = currentZoom()
             val proposed = current * detector.scaleFactor
             val minScale = fitScale * MIN_ZOOM_FACTOR
@@ -169,16 +173,68 @@ class IceorsView @JvmOverloads constructor(
     }
     private val gestureListener = object : GestureDetector.SimpleOnGestureListener() {
         override fun onScroll(e1: MotionEvent?, e2: MotionEvent, dx: Float, dy: Float): Boolean {
+            if (!isInteractionEnabled) return false
             matrixView.postTranslate(-dx, -dy)
             invalidate()
             return true
         }
 
         override fun onSingleTapUp(e: MotionEvent): Boolean {
+            if (!isInteractionEnabled) return false
             handleTap(e.x, e.y)
             return true
         }
     }
+
+    private var replayAnimator: android.animation.ValueAnimator? = null
+
+    /**
+     * Resets all regions to un-completed and animates them being filled
+     * sequentially over [durationMs]. Interaction is disabled during replay.
+     */
+    fun startReplay(durationMs: Long, onFinish: (() -> Unit)? = null) {
+        val a = asset ?: return
+        replayAnimator?.cancel()
+        isInteractionEnabled = false
+        
+        // 1. Reset all
+        val fills = a.fillables
+        for (r in fills) r.completed = false
+        
+        // 2. Sort regions for a natural-feeling replay (by palette index, then position)
+        val sorted = fills.sortedWith(compareBy({ it.paletteIndex }, { it.labelY }, { it.labelX }))
+        
+        // 3. Animate
+        replayAnimator = android.animation.ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = durationMs
+            interpolator = android.view.animation.LinearInterpolator()
+            addUpdateListener { anim ->
+                val progress = anim.animatedValue as Float
+                val targetCount = (progress * sorted.size).toInt()
+                
+                var changed = false
+                for (i in 0 until targetCount) {
+                    if (!sorted[i].completed) {
+                        sorted[i].completed = true
+                        changed = true
+                    }
+                }
+                if (changed) {
+                    invalidate()
+                }
+            }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    isInteractionEnabled = true
+                    notifyProgress()
+                    onFinish?.invoke()
+                    replayAnimator = null
+                }
+            })
+            start()
+        }
+    }
+
     private val scaleDetector = ScaleGestureDetector(context, scaleListener)
     private val gestureDetector = GestureDetector(context, gestureListener)
 
@@ -518,24 +574,26 @@ class IceorsView @JvmOverloads constructor(
         val minScreenCanvas = labelMinScreenPx / zoom
         val maxScreenCanvas = labelMaxScreenPx / zoom
         val rect = Rect()
-        for (region in a.fillables) {
-            if (region.completed) continue
-            if (region.fontSize < minCanvasFont) continue
-            val text = region.paletteIndex.toString()
-            // Two-digit labels need to fit horizontally too — narrow that side.
-            val widthBudget = region.labelInscribedRadius * 2f / text.length.coerceAtLeast(1)
-            val heightBudget = region.labelInscribedRadius * 2f
-            val canvasFont = (minOf(widthBudget, heightBudget) * LABEL_RADIUS_FACTOR)
-                .coerceIn(minScreenCanvas, maxScreenCanvas)
-            numberPaint.textSize = canvasFont
-            numberPaint.color = region.labelColor ?: Color.DKGRAY
-            numberPaint.getTextBounds(text, 0, text.length, rect)
-            canvas.drawText(
-                text,
-                region.labelCenterX,
-                region.labelCenterY + rect.height() / 2f,
-                numberPaint,
-            )
+        if (isInteractionEnabled) {
+            for (region in a.fillables) {
+                if (region.completed) continue
+                if (region.fontSize < minCanvasFont) continue
+                val text = region.paletteIndex.toString()
+                // Two-digit labels need to fit horizontally too — narrow that side.
+                val widthBudget = region.labelInscribedRadius * 2f / text.length.coerceAtLeast(1)
+                val heightBudget = region.labelInscribedRadius * 2f
+                val canvasFont = (minOf(widthBudget, heightBudget) * LABEL_RADIUS_FACTOR)
+                    .coerceIn(minScreenCanvas, maxScreenCanvas)
+                numberPaint.textSize = canvasFont
+                numberPaint.color = region.labelColor ?: Color.DKGRAY
+                numberPaint.getTextBounds(text, 0, text.length, rect)
+                canvas.drawText(
+                    text,
+                    region.labelCenterX,
+                    region.labelCenterY + rect.height() / 2f,
+                    numberPaint,
+                )
+            }
         }
         canvas.restore()
     }

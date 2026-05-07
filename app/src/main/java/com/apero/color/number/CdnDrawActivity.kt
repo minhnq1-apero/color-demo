@@ -1,13 +1,16 @@
 package com.apero.color.number
 
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,22 +20,19 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -41,17 +41,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
+import com.apero.color.number.coloring.ResultHolder
+import com.apero.color.number.iceors.BitmapExporter
 import com.apero.color.number.iceors.IceorsAsset
 import com.apero.color.number.iceors.IceorsPalette
 import com.apero.color.number.iceors.IceorsView
 import com.apero.color.number.iceors.network.IceorsRepository
 import com.apero.color.number.ui.theme.ColorByNumberTheme
-import android.widget.Toast
-import androidx.compose.runtime.rememberCoroutineScope
-import com.apero.color.number.iceors.BitmapExporter
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -150,6 +148,17 @@ private fun CdnDrawBody(padding: PaddingValues, picKey: String) {
             total = l.regions.size
             activeIndex = l.palette.firstOrNull()?.index ?: -1
         }.onFailure { error = it.message ?: "load failed" }
+    }
+
+    LaunchedEffect(done, total) {
+        if (total > 0 && done >= total) {
+            delay(800)
+            ResultHolder.iceorsAsset = loaded
+            ResultHolder.revealBitmap = revealBitmap
+            ResultHolder.isOil = picKey.contains("oil")
+            context.startActivity(Intent(context, IceorsResultActivity::class.java))
+            (context as? Activity)?.finish()
+        }
     }
 
     Column(modifier = Modifier.fillMaxSize().padding(padding)) {
