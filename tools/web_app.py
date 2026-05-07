@@ -134,7 +134,7 @@ c2.metric("Stroke lines", stroke_n)
 c3.metric("Total", len(lines))
 c4.metric("Output canvas", f"{OUTPUT_CANVAS}px")
 
-def _lines_to_preview_svg(lines: list[str]) -> str:
+def _lines_to_preview_svg(lines: list[str], only_black: bool = False) -> str:
     """Render Iceors lines back to an SVG for visual diffing."""
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {OUTPUT_CANVAS} {OUTPUT_CANVAS}" '
@@ -145,9 +145,15 @@ def _lines_to_preview_svg(lines: list[str]) -> str:
         if len(cols) < 3:
             continue
         d, color, sw = cols[0], cols[1], cols[2]
+        is_black = color.strip() == "000000" or color.strip() == "0"
+        
+        if only_black and not is_black and sw.strip() == "0":
+            continue
+
         if sw.strip() == "0":
             parts.append(f'<path d="{d}" fill="#{color}" fill-rule="evenodd"/>')
         else:
+            # Strokes are always black outlines in Iceors
             parts.append(
                 f'<path d="{d}" fill="none" stroke="black" stroke-width="{sw}"/>'
             )
@@ -157,7 +163,7 @@ def _lines_to_preview_svg(lines: list[str]) -> str:
 
 # ── Preview ───────────────────────────────────────────────────────────────────
 st.subheader("Preview")
-col_orig, col_render = st.columns(2)
+col_orig, col_render, col_black = st.columns(3)
 with col_orig:
     st.caption("Original SVG")
     st.markdown(
@@ -166,8 +172,11 @@ with col_orig:
         unsafe_allow_html=True,
     )
 with col_render:
-    st.caption("Iceors output (re-rendered from generated lines)")
+    st.caption("All Layers (Full Preview)")
     st.markdown(_lines_to_preview_svg(lines), unsafe_allow_html=True)
+with col_black:
+    st.caption("Black Outlines (Non-paintable)")
+    st.markdown(_lines_to_preview_svg(lines, only_black=True), unsafe_allow_html=True)
 
 # ── Build ZIP ─────────────────────────────────────────────────────────────────
 key = asset_key.strip() or "asset"

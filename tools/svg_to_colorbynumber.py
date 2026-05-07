@@ -175,8 +175,8 @@ def _is_black(rgb: Optional[tuple[int, int, int]]) -> bool:
     if rgb is None:
         return False
     r, g, b = rgb
-    # Allowing a small tolerance for "almost black"
-    return r < 10 and g < 10 and b < 10
+    # Allowing a wider tolerance for "almost black" (up to dark gray RGB 25)
+    return r < 25 and g < 25 and b < 25
 
 
 def _merge_similar_colors(
@@ -255,7 +255,7 @@ def svg_to_lines(
     if sw <= 0 or sh <= 0:
         raise ValueError("SVG has no usable viewBox/width/height")
 
-    # Pad to square so canvas is 1:1 (Iceors canvas is square)
+    # Pad to square if input aspect != 1:1
     side = max(sw, sh)
     offset_x = (side - sw) / 2 - vx
     offset_y = (side - sh) / 2 - vy
@@ -347,7 +347,7 @@ def svg_to_lines(
                 f"{new_d}|{r['color_hex']}|0|{r['label_pos']}|{FONT_SIZE}"
             )
             # Only add auto-outline if the region is black
-            if auto_outline_width > 0 and r['color_hex'] == "010101":
+            if auto_outline_width > 0 and r['color_hex'] == "000000":
                 stroke_lines.append(f"{new_d}|0|{auto_outline_width:.2f}|0|0")
     else:
         if subtract_overlaps and not _HAS_PATHOPS:
@@ -357,7 +357,7 @@ def svg_to_lines(
                 f"{r['d_orig']}|{r['color_hex']}|0|{r['label_pos']}|{FONT_SIZE}"
             )
             # Only add auto-outline if the region is black
-            if auto_outline_width > 0 and r['color_hex'] == "010101":
+            if auto_outline_width > 0 and r['color_hex'] == "000000":
                 stroke_lines.append(f"{r['d_orig']}|0|{auto_outline_width:.2f}|0|0")
 
     log(f"[svg→cbn] {n_total} shapes parsed, {n_skipped} skipped")

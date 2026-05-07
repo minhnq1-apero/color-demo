@@ -58,7 +58,7 @@ def rgb_to_hex(r: int, g: int, b: int) -> str:
     - (0,0,0)       → BLACK_FILL (solid black, không tô được).
     - (255,255,255) → DROPPED nếu strokeWidth==0 → bump xuống (254,254,254)
     """
-    if r < 10 and g < 10 and b < 10:
+    if r < 25 and g < 25 and b < 25:
         return "000000"
     elif r == 255 and g == 255 and b == 255:
         r, g, b = 254, 254, 254
