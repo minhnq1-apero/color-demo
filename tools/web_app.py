@@ -346,14 +346,19 @@ try:
     from PIL import Image as _PILImage
     from svgelements import SVG as _SVG
 
-    # SVG aspect (paths được pad theo cái này)
+    # SVG aspect (paths được pad theo cái này). Phải dùng svg.width/height
+    # giống bake transform trong svg_to_colorbynumber — svgelements bake outer
+    # viewBox→width transform vào path coords, nên paths nằm trong
+    # `svg.width × svg.height` pixel space, không phải viewBox space.
     parsed = _SVG.parse(io.BytesIO(svg_bytes))
-    if parsed.viewbox is not None:
-        sw = float(parsed.viewbox.width)
-        sh = float(parsed.viewbox.height)
-    else:
-        sw = float(parsed.width or OUTPUT_CANVAS)
-        sh = float(parsed.height or OUTPUT_CANVAS)
+    sw = float(parsed.width) if parsed.width else 0.0
+    sh = float(parsed.height) if parsed.height else 0.0
+    if sw <= 0 or sh <= 0:
+        if parsed.viewbox is not None:
+            sw = float(parsed.viewbox.width)
+            sh = float(parsed.viewbox.height)
+        else:
+            sw = sh = float(OUTPUT_CANVAS)
 
     if ref_image_file is not None:
         # User upload ảnh riêng — fit vào SVG aspect rồi pad vuông
