@@ -42,11 +42,15 @@ FONT_SIZE = 12
 
 
 def rgb_to_hex(r: int, g: int, b: int) -> str:
-    """Bump colors that Android's classify() drops or treats as decoration."""
-    if r == 0 and g == 0 and b == 0:
-        r, g, b = 1, 1, 1
-    elif r == 255 and g == 255 and b == 255:
-        r, g, b = 254, 254, 254
+    """
+    Convert RGB to Hex.
+    - Black (or near black) → 000000 (Android treats this as fixed BLACK_FILL).
+    - White (255,255,255) → FEFEFE (Android drops pure white without stroke).
+    """
+    if _is_black((r, g, b)):
+        return "000000"
+    if r == 255 and g == 255 and b == 255:
+        return "FEFEFE"
     return f"{r:02X}{g:02X}{b:02X}"
 
 
@@ -149,8 +153,7 @@ def _path_centroid(path: SvgPath) -> tuple[float, float]:
 
 def _color_to_rgb(c) -> Optional[tuple[int, int, int]]:
     """
-    svgelements.Color → (r, g, b) or None if 'none'/transparent.
-    Handles Color, named colors, and 'none' string.
+    svgelements.Color → (r, g, b) or None if 'none'/transparent/zero-alpha.
     """
     if c is None:
         return None
@@ -158,9 +161,22 @@ def _color_to_rgb(c) -> Optional[tuple[int, int, int]]:
     if s in ("none", "transparent", ""):
         return None
     try:
+        # Check alpha/opacity if available
+        alpha = getattr(c, "alpha", 255)
+        if alpha == 0:
+            return None
         return int(c.red), int(c.green), int(c.blue)
     except AttributeError:
         return None
+
+
+def _is_black(rgb: Optional[tuple[int, int, int]]) -> bool:
+    """Check if color is black or very close to black."""
+    if rgb is None:
+        return False
+    r, g, b = rgb
+    # Allowing a small tolerance for "almost black"
+    return r < 10 and g < 10 and b < 10
 
 
 def _merge_similar_colors(
@@ -296,7 +312,7 @@ def svg_to_lines(
                 "label_pos": label_pos,
             })
 
-        if stroke_rgb is not None and stroke_w > 0:
+        if _is_black(stroke_rgb) and stroke_w > 0:
             stroke_lines.append(f"{d}|0|{stroke_w:.2f}|0|0")
 
     # Merge similar colors before sorting/subtracting so the palette is clean.
@@ -330,7 +346,8 @@ def svg_to_lines(
             fill_only.append(
                 f"{new_d}|{r['color_hex']}|0|{r['label_pos']}|{FONT_SIZE}"
             )
-            if auto_outline_width > 0:
+            # Only add auto-outline if the region is black
+            if auto_outline_width > 0 and r['color_hex'] == "010101":
                 stroke_lines.append(f"{new_d}|0|{auto_outline_width:.2f}|0|0")
     else:
         if subtract_overlaps and not _HAS_PATHOPS:
@@ -339,7 +356,8 @@ def svg_to_lines(
             fill_only.append(
                 f"{r['d_orig']}|{r['color_hex']}|0|{r['label_pos']}|{FONT_SIZE}"
             )
-            if auto_outline_width > 0:
+            # Only add auto-outline if the region is black
+            if auto_outline_width > 0 and r['color_hex'] == "010101":
                 stroke_lines.append(f"{r['d_orig']}|0|{auto_outline_width:.2f}|0|0")
 
     log(f"[svg→cbn] {n_total} shapes parsed, {n_skipped} skipped")
