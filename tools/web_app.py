@@ -134,49 +134,166 @@ c2.metric("Stroke lines", stroke_n)
 c3.metric("Total", len(lines))
 c4.metric("Output canvas", f"{OUTPUT_CANVAS}px")
 
+import re
+
+def _clean_svg_for_preview(svg_str: str) -> str:
+    """
+    Ensure the SVG scales correctly:
+    1. Find existing width/height/viewBox.
+    2. If no viewBox, try to create one from width/height.
+    3. Remove width/height attributes so it's responsive.
+    """
+    # Try to find viewBox
+    vb_match = re.search(r'viewBox\s*=\s*["\']([^"\']+)["\']', svg_str, re.I)
+    w_match = re.search(r'\swidth\s*=\s*["\']([^"\'%]+)["\']', svg_str, re.I)
+    h_match = re.search(r'\sheight\s*=\s*["\']([^"\'%]+)["\']', svg_str, re.I)
+
+    new_svg = svg_str
+    if not vb_match and w_match and h_match:
+        # Create viewBox from width and height if missing
+        w, h = w_match.group(1), h_match.group(1)
+        # Clean numeric values (remove px, etc.)
+        w_num = re.sub(r'[^\d.]', '', w)
+        h_num = re.sub(r'[^\d.]', '', h)
+        if w_num and h_num:
+            new_svg = re.sub(r'(<svg[^>]*?)', rf'\1 viewBox="0 0 {w_num} {h_num}"', new_svg, count=1, flags=re.I)
+
+    # Strip width and height from the root <svg> tag
+    new_svg = re.sub(r'(<svg[^>]*?)\s+width="[^"]*"', r'\1', new_svg, flags=re.I)
+    new_svg = re.sub(r'(<svg[^>]*?)\s+height="[^"]*"', r'\1', new_svg, flags=re.I)
+    
+    # Ensure it has an xmlns if missing (required for data URI)
+    if 'xmlns="http://www.w3.org/2000/svg"' not in new_svg:
+        new_svg = new_svg.replace('<svg ', '<svg xmlns="http://www.w3.org/2000/svg" ', 1)
+        
+    return new_svg
+
+_NUM_RE = re.compile(r"-?\d+(?:\.\d+)?")
+
+
+def _path_d_bbox(d: str) -> tuple[float, float, float, float] | None:
+    """
+    Quick & approximate bbox of a path d string by scanning every numeric pair.
+    Includes Bézier control points (so it overestimates), which is exactly
+    what we want for a safe-fit viewBox.
+    """
+    nums = [float(m.group()) for m in _NUM_RE.finditer(d)]
+    if len(nums) < 2:
+        return None
+    xs = nums[0::2]
+    ys = nums[1::2]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
 def _lines_to_preview_svg(lines: list[str], only_black: bool = False) -> str:
-    """Render Iceors lines back to an SVG for visual diffing."""
-    parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {OUTPUT_CANVAS} {OUTPUT_CANVAS}" '
-        f'width="100%" style="background:white;border:1px solid #ddd;border-radius:8px">'
-    ]
+    """Render Iceors lines back to an SVG string with a fit-to-content viewBox."""
+    body: list[str] = []
+    bx0 = by0 = float("inf")
+    bx1 = by1 = float("-inf")
+
     for line in lines:
         cols = line.split("|")
         if len(cols) < 3:
             continue
         d, color, sw = cols[0], cols[1], cols[2]
         is_black = color.strip() == "000000" or color.strip() == "0"
-        
+
         if only_black and not is_black and sw.strip() == "0":
             continue
 
-        if sw.strip() == "0":
-            parts.append(f'<path d="{d}" fill="#{color}" fill-rule="evenodd"/>')
-        else:
-            # Strokes are always black outlines in Iceors
-            parts.append(
-                f'<path d="{d}" fill="none" stroke="black" stroke-width="{sw}"/>'
-            )
-    parts.append("</svg>")
-    return "".join(parts)
+        bb = _path_d_bbox(d)
+        if bb is not None:
+            x0, y0, x1, y1 = bb
+            if x0 < bx0: bx0 = x0
+            if y0 < by0: by0 = y0
+            if x1 > bx1: bx1 = x1
+            if y1 > by1: by1 = y1
 
+        if sw.strip() == "0":
+            body.append(f'<path d="{d}" fill="#{color}" fill-rule="evenodd"/>')
+        else:
+            body.append(
+                f'<path d="{d}" fill="none" stroke="black" stroke-width="{sw}" '
+                f'stroke-linecap="round" stroke-linejoin="round"/>'
+            )
+
+    # Fit viewBox to the union of (canvas, path bbox) so nothing gets clipped
+    # even if paths extend beyond [0, OUTPUT_CANVAS] for any reason.
+    if bx0 == float("inf"):
+        vx, vy, vw, vh = 0.0, 0.0, float(OUTPUT_CANVAS), float(OUTPUT_CANVAS)
+    else:
+        vx = min(0.0, bx0)
+        vy = min(0.0, by0)
+        vw = max(float(OUTPUT_CANVAS), bx1) - vx
+        vh = max(float(OUTPUT_CANVAS), by1) - vy
+
+    header = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" '
+        f'viewBox="{vx:.1f} {vy:.1f} {vw:.1f} {vh:.1f}">'
+        f'<rect x="0" y="0" width="{OUTPUT_CANVAS}" height="{OUTPUT_CANVAS}" fill="white"/>'
+    )
+    return header + "".join(body) + "</svg>"
+
+
+def _render_inline_svg(svg_str: str) -> str:
+    """Wrap SVG in a responsive container so browsers render it at column width."""
+    cleaned = _clean_svg_for_preview(svg_str)
+    # Force the SVG to fill its container width while keeping aspect via viewBox.
+    cleaned = re.sub(
+        r'<svg\b',
+        '<svg style="width:100%;height:auto;display:block"',
+        cleaned, count=1,
+    )
+    return (
+        '<div style="background:#fff;padding:8px;border:1px solid #ddd;'
+        'border-radius:8px">' + cleaned + '</div>'
+    )
 
 # ── Preview ───────────────────────────────────────────────────────────────────
 st.subheader("Preview")
 col_orig, col_render, col_black = st.columns(3)
+
+# Prepare SVG strings
+orig_svg_str = svg_bytes.decode("utf-8", errors="ignore")
+render_svg_str = _lines_to_preview_svg(lines)
+black_svg_str = _lines_to_preview_svg(lines, only_black=True)
+
+# Diagnostic: report path bbox so we can spot overflow vs the canvas
+_all_x: list[float] = []
+_all_y: list[float] = []
+for _line in lines:
+    _cols = _line.split("|")
+    if len(_cols) >= 1:
+        _bb = _path_d_bbox(_cols[0])
+        if _bb is not None:
+            _all_x.extend([_bb[0], _bb[2]])
+            _all_y.extend([_bb[1], _bb[3]])
+if _all_x and _all_y:
+    _x0, _x1 = min(_all_x), max(_all_x)
+    _y0, _y1 = min(_all_y), max(_all_y)
+    log.append(
+        f"path bbox: x=[{_x0:.1f}, {_x1:.1f}] y=[{_y0:.1f}, {_y1:.1f}] "
+        f"vs canvas [0, {OUTPUT_CANVAS}]"
+    )
+    if _x0 < -1 or _y0 < -1 or _x1 > OUTPUT_CANVAS + 1 or _y1 > OUTPUT_CANVAS + 1:
+        st.warning(
+            f"⚠️ Paths overflow canvas: x=[{_x0:.0f}, {_x1:.0f}] "
+            f"y=[{_y0:.0f}, {_y1:.0f}] (canvas = {OUTPUT_CANVAS}). "
+            "Preview viewBox auto-expanded; cần fix bake transform trong "
+            "svg_to_colorbynumber.py."
+        )
+
 with col_orig:
     st.caption("Original SVG")
-    st.markdown(
-        f'<div style="background:#fff;padding:12px;border-radius:8px;'
-        f'border:1px solid #ddd">{svg_bytes.decode("utf-8", errors="ignore")}</div>',
-        unsafe_allow_html=True,
-    )
+    st.markdown(_render_inline_svg(orig_svg_str), unsafe_allow_html=True)
+
 with col_render:
-    st.caption("All Layers (Full Preview)")
-    st.markdown(_lines_to_preview_svg(lines), unsafe_allow_html=True)
+    st.caption("Full Preview")
+    st.markdown(_render_inline_svg(render_svg_str), unsafe_allow_html=True)
+
 with col_black:
-    st.caption("Black Outlines (Non-paintable)")
-    st.markdown(_lines_to_preview_svg(lines, only_black=True), unsafe_allow_html=True)
+    st.caption("Black Outlines (Fixed)")
+    st.markdown(_render_inline_svg(black_svg_str), unsafe_allow_html=True)
 
 # ── Build ZIP ─────────────────────────────────────────────────────────────────
 key = asset_key.strip() or "asset"

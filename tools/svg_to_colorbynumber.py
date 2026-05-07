@@ -257,27 +257,28 @@ def svg_to_lines(
     """
     svg = SVG.parse(svg_input)
 
-    # Work out source dimensions from viewBox or width/height
-    if svg.viewbox is not None:
-        sw = float(svg.viewbox.width)
-        sh = float(svg.viewbox.height)
-        vx = float(svg.viewbox.x)
-        vy = float(svg.viewbox.y)
-    else:
-        sw = float(svg.width or 0)
-        sh = float(svg.height or 0)
-        vx = vy = 0.0
-
+    # svgelements bakes the viewBox→width transform into element coordinates
+    # during parse, so path coords arrive in `svg.width × svg.height` pixel
+    # space (NOT viewBox space). Using viewbox.width/height here would
+    # double-scale when the two differ (e.g. width="600pt" + viewBox="0 0 600 600"
+    # gives svg.width=800 but viewbox.width=600 — a 4/3 mismatch).
+    sw = float(svg.width) if svg.width else 0.0
+    sh = float(svg.height) if svg.height else 0.0
     if sw <= 0 or sh <= 0:
-        raise ValueError("SVG has no usable viewBox/width/height")
+        if svg.viewbox is not None:
+            sw = float(svg.viewbox.width)
+            sh = float(svg.viewbox.height)
+        else:
+            raise ValueError("SVG has no usable viewBox/width/height")
 
-    # Pad to square if input aspect != 1:1
+    # Pad to square if input aspect != 1:1. Origin offset (vx/vy) is already
+    # absorbed by svgelements into element coords, so we don't re-apply it.
     side = max(sw, sh)
-    offset_x = (side - sw) / 2 - vx
-    offset_y = (side - sh) / 2 - vy
+    offset_x = (side - sw) / 2
+    offset_y = (side - sh) / 2
     scale = output_canvas / side
 
-    # Affine matrix: viewBox space → OUTPUT_CANVAS pixel space
+    # Affine matrix: pixel space → OUTPUT_CANVAS pixel space
     bake = Matrix(f"scale({scale}) translate({offset_x}, {offset_y})")
 
     # First pass: collect all parsed shapes

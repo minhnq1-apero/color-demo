@@ -14,3 +14,5 @@
 .cxx
 local.properties
 decode
+__pycache__/
+*.pyc
