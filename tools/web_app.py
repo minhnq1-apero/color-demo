@@ -2,9 +2,7 @@
 """
 Streamlit web UI — SVG → Iceors Color-by-Number converter.
 
-Two modes:
-  • SVG (auto)  — upload a vector SVG, all shapes parsed into Iceors lines
-  • Manual      — click-build polygons over a raster image, color auto-detected
+Upload a vector SVG; all shapes are parsed into Iceors lines.
 
 Run:
     cd tools/
@@ -30,21 +28,6 @@ st.caption(
     "`IceorsAsset canvasSize`. Workflow đề xuất: AI sinh PNG → "
     "[vectorizer.ai](https://vectorizer.ai) → upload SVG ở đây."
 )
-
-# ── Mode selector ─────────────────────────────────────────────────────────────
-mode = st.sidebar.radio(
-    "Mode", ["SVG (auto)", "Manual (vẽ tay từ ảnh raster)"],
-    index=0, key="app_mode",
-    help="SVG: parse shapes từ file vector. Manual: click polygon trên ảnh.",
-)
-st.sidebar.markdown("---")
-
-if mode.startswith("Manual"):
-    from manual_mode import render_manual_mode
-    render_manual_mode()
-    st.stop()
-
-# ── SVG mode ──────────────────────────────────────────────────────────────────
 
 with st.sidebar:
     st.header("Settings")
