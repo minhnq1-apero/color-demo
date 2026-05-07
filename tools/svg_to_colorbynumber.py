@@ -44,10 +44,10 @@ FONT_SIZE = 12
 def rgb_to_hex(r: int, g: int, b: int) -> str:
     """
     Convert RGB to Hex.
-    - Black (or near black) → 000000 (Android treats this as fixed BLACK_FILL).
+    - Black/Fixed colors → 000000 (Android treats this as fixed BLACK_FILL).
     - White (255,255,255) → FEFEFE (Android drops pure white without stroke).
     """
-    if _is_black((r, g, b)):
+    if _is_fixed_color((r, g, b)):
         return "000000"
     if r == 255 and g == 255 and b == 255:
         return "FEFEFE"
@@ -170,13 +170,29 @@ def _color_to_rgb(c) -> Optional[tuple[int, int, int]]:
         return None
 
 
-def _is_black(rgb: Optional[tuple[int, int, int]]) -> bool:
-    """Check if color is black or very close to black."""
+def _is_fixed_color(rgb: Optional[tuple[int, int, int]]) -> bool:
+    """Check if color is black OR the specific brown ranges for fixed decorations."""
     if rgb is None:
         return False
     r, g, b = rgb
-    # Allowing a wider tolerance for "almost black" (up to dark gray RGB 25)
-    return r < 25 and g < 25 and b < 25
+    
+    # 1. Black/Dark gray range (RGB < 25)
+    if r < 25 and g < 25 and b < 25:
+        return True
+        
+    # 2. Brown range around #843B42 (132, 59, 66)
+    if (132-15 < r < 132+15 and 
+        59-15 < g < 59+15 and 
+        66-15 < b < 66+15):
+        return True
+
+    # 3. Dark Brown range around #58242A (88, 36, 42)
+    if (88-15 < r < 88+15 and 
+        36-15 < g < 36+15 and 
+        42-15 < b < 42+15):
+        return True
+        
+    return False
 
 
 def _merge_similar_colors(
@@ -312,7 +328,7 @@ def svg_to_lines(
                 "label_pos": label_pos,
             })
 
-        if _is_black(stroke_rgb) and stroke_w > 0:
+        if _is_fixed_color(stroke_rgb) and stroke_w > 0:
             stroke_lines.append(f"{d}|0|{stroke_w:.2f}|0|0")
 
     # Merge similar colors before sorting/subtracting so the palette is clean.
@@ -336,9 +352,22 @@ def svg_to_lines(
         for i in range(len(fill_records) - 1, -1, -1):
             current = sk_paths[i]
             if above_union is not None:
-                current = sk_op(current, above_union, PathOp.DIFFERENCE)
+                try:
+                    current = sk_op(current, above_union, PathOp.DIFFERENCE)
+                except Exception as e:
+                    log(f"  [warning] pathops DIFFERENCE failed for region {i}, falling back to original: {e}")
+                    current = sk_paths[i]  # fallback
+            
             new_d_list[i] = _skia_to_d(current)
-            above_union = current if above_union is None else sk_op(above_union, current, PathOp.UNION)
+            
+            try:
+                if above_union is None:
+                    above_union = current
+                else:
+                    above_union = sk_op(above_union, current, PathOp.UNION)
+            except Exception as e:
+                log(f"  [warning] pathops UNION failed at region {i}: {e}")
+                # if union fails, we just keep the previous union to avoid corrupted state
 
         for r, new_d in zip(fill_records, new_d_list):
             if not new_d:    # entire region was covered → skip

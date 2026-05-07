@@ -55,12 +55,26 @@ CANNY_HIGH      = 150
 def rgb_to_hex(r: int, g: int, b: int) -> str:
     """
     Bump các màu bị app classify sai:
-    - (0,0,0)       → BLACK_FILL (solid black, không tô được).
+    - (0,0,0) hoặc Nâu #843B42 → BLACK_FILL (solid black, không tô được).
     - (255,255,255) → DROPPED nếu strokeWidth==0 → bump xuống (254,254,254)
     """
+    # Black range
     if r < 25 and g < 25 and b < 25:
         return "000000"
-    elif r == 255 and g == 255 and b == 255:
+    
+    # Brown range around #843B42 (132, 59, 66)
+    if (132-15 < r < 132+15 and 
+        59-15 < g < 59+15 and 
+        66-15 < b < 66+15):
+        return "000000"
+
+    # Dark Brown range around #58242A (88, 36, 42)
+    if (88-15 < r < 88+15 and 
+        36-15 < g < 36+15 and 
+        42-15 < b < 42+15):
+        return "000000"
+
+    if r == 255 and g == 255 and b == 255:
         r, g, b = 254, 254, 254
     return f"{r:02X}{g:02X}{b:02X}"
 
