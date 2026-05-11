@@ -450,3 +450,4 @@ with st.expander("ZIP structure"):
 
 with st.expander("Log"):
     st.text("\n".join(log))
+
