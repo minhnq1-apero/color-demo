@@ -40,8 +40,11 @@ with st.sidebar:
              "Nếu upload riêng (vd: ảnh AI gốc trước khi vectorize) → "
              "ảnh đó sẽ được align center-pad vuông để khớp với paths.",
     )
+    if "random_key" not in st.session_state:
+        st.session_state.random_key = "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+
     asset_key = st.text_input(
-        "Asset key", value="asset",
+        "Asset key", value=st.session_state.random_key,
         help="Tên file bên trong ZIP: {key}b. Không dùng dấu cách.",
     )
 
