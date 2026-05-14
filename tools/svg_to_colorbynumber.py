@@ -248,102 +248,12 @@ def _merge_similar_colors(
         r["color_hex"] = remap[r["color_hex"]]
 
 
-def _extract_raster_lines(
-    svg_input, output_canvas: int, threshold: int = 200, log=print
-) -> list[str]:
-    """
-    Render SVG to grayscale, use OpenCV to find contours of dark areas,
-    and return them as fixed black lines (000000 fill).
-    """
-    log(f"[raster→cbn] Rendering SVG to {output_canvas}px for line extraction...")
-    
-    # Handle both file paths and file-like objects
-    if hasattr(svg_input, "seek") and hasattr(svg_input, "read"):
-        svg_input.seek(0)
-        svg_bytes = svg_input.read()
-    elif isinstance(svg_input, (str, bytes)) and not isinstance(svg_input, bytes):
-        try:
-            with open(svg_input, "rb") as f:
-                svg_bytes = f.read()
-        except Exception:
-            svg_bytes = str(svg_input).encode("utf-8")
-    else:
-        svg_bytes = svg_input
-
-    try:
-        # Render SVG to PNG in memory
-        png_data = cairosvg.svg2png(
-            bytestring=svg_bytes,
-            output_width=output_canvas,
-            output_height=output_canvas,
-        )
-        
-        # Decode to OpenCV image
-        nparr = np.frombuffer(png_data, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
-        
-        if img is None:
-            raise ValueError("Failed to decode rendered PNG")
-
-        # Handle alpha channel (blend with white background)
-        if len(img.shape) == 3 and img.shape[2] == 4:
-            alpha = img[:, :, 3] / 255.0
-            for c in range(3):
-                img[:, :, c] = (img[:, :, c] * alpha + 255 * (1 - alpha)).astype(np.uint8)
-            img = img[:, :, :3]
-        elif len(img.shape) == 2:
-            # Grayscale already
-            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-            
-        # Convert to grayscale
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        
-        # Canny Edge Detection (finds outlines instead of just dark areas)
-        # 100, 200 are typical hysteresis thresholds
-        edges = cv2.Canny(gray, 100, 200)
-        
-        # Dilate edges slightly to bridge gaps and make them "solid" for contour finding
-        kernel = np.ones((3, 3), np.uint8)
-        dilated = cv2.dilate(edges, kernel, iterations=1)
-        
-        # Find contours on the edge-detected image
-        contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        lines: list[str] = []
-        for cnt in contours:
-            # Filter by area: skip tiny noise and skip massive boxes (like background)
-            area = cv2.contourArea(cnt)
-            if area < 5 or area > (output_canvas * output_canvas * 0.9):
-                continue
-                
-            # Convert contour to SVG path d string
-            parts = []
-            for i, pt in enumerate(cnt):
-                x, y = pt[0]
-                cmd = "M" if i == 0 else "L"
-                parts.append(f"{cmd}{x:.2f},{y:.2f}")
-            parts.append("Z")
-            d = "".join(parts)
-            
-            # Format as fixed black line
-            lines.append(f"{d}|000000|0|0|0")
-            
-        log(f"[raster→cbn] Extracted {len(lines)} contours as black lines.")
-        return lines
-        
-    except Exception as e:
-        log(f"[raster→cbn] Error during raster extraction: {e}")
-        return []
-
-
 def svg_to_lines(
     svg_input,
     output_canvas: int = OUTPUT_CANVAS,
     subtract_overlaps: bool = True,
     auto_outline_width: float = 0.0,
     color_merge_tolerance: float = 0.0,
-    use_raster_lines: bool = False,
-    raster_threshold: int = 200,
     log=print,
 ) -> tuple[list[str], tuple[int, int, int, int]]:
     """
@@ -352,17 +262,7 @@ def svg_to_lines(
     Returns (lines, viewport) where viewport = (x, y, width, height) in
     OUTPUT_CANVAS coordinates after squaring + padding.
     """
-    # 1. Raster line extraction (optional, using OpenCV)
-    # We do this first or separate from the vector parse.
-    raster_lines = []
-    if use_raster_lines:
-        raster_lines = _extract_raster_lines(
-            svg_input, output_canvas, threshold=raster_threshold, log=log
-        )
-
-    # 2. Vector parse (svgelements)
-    if hasattr(svg_input, "seek"):
-        svg_input.seek(0)
+    # Vector parse (svgelements)
     svg = SVG.parse(svg_input)
 
     # svgelements bakes the viewBox→width transform into element coordinates
@@ -499,10 +399,10 @@ def svg_to_lines(
                 stroke_lines.append(f"{r['d_orig']}|0|{auto_outline_width:.2f}|0|0")
 
     log(f"[svg→cbn] {n_total} shapes parsed, {n_skipped} skipped")
-    log(f"  → {len(fill_only)} fill, {len(stroke_lines)} stroke, {len(raster_lines)} raster | canvas {output_canvas}px")
+    log(f"  → {len(fill_only)} fill, {len(stroke_lines)} stroke | canvas {output_canvas}px")
 
     viewport = (0, 0, output_canvas, output_canvas)
-    return fill_only + stroke_lines + raster_lines, viewport
+    return fill_only + stroke_lines, viewport
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -520,12 +420,6 @@ def main() -> None:
     ap.add_argument("--merge-tolerance", type=float, default=0.0,
                     help="Merge colors within this RGB Euclidean distance "
                          "(typical 10-30; 0 = off)")
-    ap.add_argument("--raster-lines", action="store_true",
-                    help="Use OpenCV to extract lines from grayscale-rendered SVG "
-                         "(more accurate for messy vectors)")
-    ap.add_argument("--raster-threshold", type=int, default=200,
-                    help="Threshold (0-255) for raster line extraction "
-                         "(lower = more aggressive/thicker lines)")
     args = ap.parse_args()
 
     try:
@@ -534,8 +428,6 @@ def main() -> None:
             subtract_overlaps=not args.no_subtract,
             auto_outline_width=args.outline,
             color_merge_tolerance=args.merge_tolerance,
-            use_raster_lines=args.raster_lines,
-            raster_threshold=args.raster_threshold,
         )
     except (FileNotFoundError, ValueError) as e:
         print(f"Error: {e}", file=sys.stderr)

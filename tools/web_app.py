@@ -58,19 +58,6 @@ with st.sidebar:
     )
 
     st.markdown("---")
-    st.markdown("**Raster Line Extraction (OpenCV)**")
-    use_raster = st.toggle(
-        "Lấy nét đen từ ảnh grayscale (OpenCV)", value=False,
-        help="Render SVG thành ảnh xám rồi dùng OpenCV quét nét. "
-             "Dùng khi SVG có nét đen mờ hoặc không đồng nhất.",
-    )
-    raster_threshold = st.slider(
-        "Raster threshold", 50, 250, 200, 5,
-        disabled=not use_raster,
-        help="Giá trị thấp hơn = lấy nét đậm hơn.",
-    )
-
-    st.markdown("---")
     st.markdown("**Color palette**")
     merge_tolerance = st.slider(
         "Merge similar colors (RGB distance)", 0, 50, 15,
@@ -110,8 +97,6 @@ try:
         subtract_overlaps=subtract,
         auto_outline_width=outline_width if add_outline else 0.0,
         color_merge_tolerance=float(merge_tolerance),
-        use_raster_lines=use_raster,
-        raster_threshold=raster_threshold,
         log=log.append,
     )
 except Exception as e:
