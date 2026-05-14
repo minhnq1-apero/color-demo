@@ -453,6 +453,30 @@ with dl2:
              ("OK." if ref_jpeg else "Chưa cài: `pip install cairosvg`."),
     )
 
+dl3, dl4 = st.columns(2)
+try:
+    import cairosvg
+    with dl3:
+        full_preview_png = cairosvg.svg2png(bytestring=render_svg_str.encode("utf-8"))
+        st.download_button(
+            "🖼️  Export Full Preview (PNG)",
+            data=full_preview_png,
+            file_name=f"{key}_full_preview.png",
+            mime="image/png",
+            use_container_width=True,
+        )
+    with dl4:
+        black_preview_png = cairosvg.svg2png(bytestring=black_svg_str.encode("utf-8"))
+        st.download_button(
+            "🖼️  Export Black Outlines (PNG)",
+            data=black_preview_png,
+            file_name=f"{key}_outlines.png",
+            mime="image/png",
+            use_container_width=True,
+        )
+except Exception as e:
+    st.error(f"Không thể export PNG: {e}")
+
 with st.expander("ZIP structure"):
     img_size = len(ref_jpeg) if ref_jpeg else 0
     st.code(
